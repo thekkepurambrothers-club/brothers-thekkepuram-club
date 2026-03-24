@@ -223,7 +223,7 @@ function Label({ children }) {
 function Divider() { return <div style={{height:1,background:G.border,margin:"12px 0"}} />; }
 
 // ─── QR CODE (SVG placeholder that looks like a real QR) ─────────────────────
-function QRCode({ value, size=180 }) {
+/*function QRCode({ value, size=180 }) {
   // Visual QR-like grid for demo (real QR needs a library)
   const seed = value.split("").reduce((a,c)=>a+c.charCodeAt(0),0);
   const cells = 21;
@@ -239,7 +239,7 @@ function QRCode({ value, size=180 }) {
       {grid.map((on,i)=> on ? <rect key={i} x={(i%cells)*cell} y={Math.floor(i/cells)*cell} width={cell} height={cell} fill="#000"/> : null)}
     </svg>
   );
-}
+}*/
 
 // ─── PAY DUES MODAL ───────────────────────────────────────────────────────────
 function PayDuesModal({ user, settings, selMonth, onSubmit, onClose, existingPayment }) {
