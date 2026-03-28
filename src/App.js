@@ -1,40 +1,15 @@
 import { useState, useRef, useEffect } from "react";
 // eslint-disable-next-line
 import {
-  supabase,
   loginWithPhone,
-  getMembers,
-  addMember,
-  updateMember,
-  bulkAddMembers,
-  getFees,
-  toggleFee,
-  getPayments,
-  submitPayment,
-  approvePayment,
-  rejectPayment,
-  getIncome,
-  addIncome,
-  updateIncome,
-  deleteIncome,
-  getExpenses,
-  addExpense,
-  updateExpense,
-  deleteExpense,
-  getEvents,
-  addEvent,
-  updateEvent,
-  deleteEvent,
-  toggleAttendance,
-  getAnnouncements,
-  addAnnouncement,
-  togglePinAnnouncement,
-  deleteAnnouncement,
-  getSettings,
-  saveSettings,
-  subscribeToPayments,
-  subscribeToFees,
-  subscribeToAnnouncements,
+  getMembers, addMember as dbAddMember, updateMember as dbUpdateMember, bulkAddMembers as dbBulkAdd,
+  getFees, toggleFee as dbToggleFee,
+  getPayments, submitPayment as dbSubmitPayment, approvePayment as dbApprovePayment, rejectPayment as dbRejectPayment,
+  getIncome, addIncome as dbAddIncome, updateIncome as dbUpdateIncome, deleteIncome as dbDeleteIncome,
+  getExpenses, addExpense as dbAddExpense, updateExpense as dbUpdateExpense, deleteExpense as dbDeleteExpense,
+  getEvents, addEvent as dbAddEvent, updateEvent as dbUpdateEvent, deleteEvent as dbDeleteEvent, toggleAttendance as dbToggleAttendance,
+  getAnnouncements, addAnnouncement as dbAddAnn, togglePinAnnouncement as dbTogglePin, deleteAnnouncement as dbDeleteAnn,
+  getSettings, saveSettings as dbSaveSettings,
 } from './supabase-integration';
 
 // ─── THEME ────────────────────────────────────────────────────────────────────
@@ -695,17 +670,40 @@ export default function App() {
   const [pinForm, setPinForm] = useState({old:"",new1:"",new2:""});
   const [pinErr,  setPinErr]  = useState("");
   const [settForm, setSettForm] = useState({...INIT_SETTINGS});
-  // ── LOAD DATA FROM SUPABASE ON STARTUP ──
+
+  // ── LOAD ALL DATA FROM SUPABASE ON STARTUP ──
+  const [loading, setLoading] = useState(true);
   useEffect(() => {
-    getMembers().then(setMembers);
-    getFees(2026).then(setFees);
-    getExpenses().then(setExpenses);
-    getIncome().then(setIncome);
-    getPayments().then(setPayments);
-    getEvents().then(setEvents);
-    getAnnouncements().then(setAnn);
-    getSettings().then(setSettings);
-  }, []);
+    async function loadAll() {
+      try {
+        const [m, f, ex, inc, pay, ev, ann, sett] = await Promise.all([
+          getMembers(), getFees(YEAR), getExpenses(), getIncome(),
+          getPayments(), getEvents(), getAnnouncements(), getSettings()
+        ]);
+        if (m && m.length)   setMembers(m);
+        if (f)               setFees(f);
+        if (ex && ex.length) setExpenses(ex);
+        if (inc && inc.length) setIncome(inc);
+        if (pay && pay.length) setPayments(pay);
+        if (ev && ev.length)  setEvents(ev);
+        if (ann && ann.length) setAnn(ann);
+        if (sett) setSettings(s => ({...s,
+          monthlyDue: sett.monthly_due  || s.monthlyDue,
+          clubName:   sett.club_name    || s.clubName,
+          gpayNumber: sett.gpay_number  || s.gpayNumber,
+          gpayName:   sett.gpay_name    || s.gpayName,
+          upiId:      sett.upi_id       || s.upiId,
+          gpayQR:     sett.gpay_qr_url  || s.gpayQR,
+          upiQR:      sett.upi_qr_url   || s.upiQR,
+          regNo:      sett.reg_no       || s.regNo,
+          founded:    sett.founded      || s.founded,
+          location:   sett.location     || s.location,
+        }));
+      } catch(e) { console.error("Supabase load error:", e); }
+      setLoading(false);
+    }
+    loadAll();
+  }, []); // eslint-disable-line
 
   const role          = user?.role;
   const activeMembers = members.filter(m=>m.active);
@@ -723,105 +721,137 @@ export default function App() {
   function closeModal() { setModal(null); setEditTarget(null); setPinErr(""); }
 
   // payment actions
-  function submitPayment({method,note,screenshot,screenshotData}) {
-    const p = { id:Date.now(), memberId:user.id, memberName:user.name, month:selMonth, year:YEAR, amount:due, method, note, screenshot, screenshotData:screenshotData||null, status:"pending", submittedAt:new Date().toISOString().slice(0,10) };
-    setPayments(prev=>[...prev,p]);
-    closeModal();
-    notify("Payment submitted! Awaiting approval.");
+  async function submitPayment({method,note,screenshotData}) {
+    try {
+      // Convert base64 to File for upload if screenshot exists
+      let screenshotFile = null;
+      if (screenshotData) {
+        const res = await fetch(screenshotData);
+        const blob = await res.blob();
+        screenshotFile = new File([blob], `payment_${Date.now()}.jpg`, {type:"image/jpeg"});
+      }
+      await dbSubmitPayment({
+        member_id: user.id, member_name: user.name,
+        month: selMonth, year: YEAR, amount: due,
+        method, note: note||"", status:"pending"
+      }, screenshotFile);
+      getPayments().then(setPayments);
+      closeModal();
+      notify("Payment submitted! Awaiting approval.");
+    } catch(e) { notify("Error submitting payment. Try again.","error"); }
   }
 
-  function approvePayment(id) {
-    setPayments(prev=>prev.map(p=>{
-      if (p.id!==id) return p;
-      setFees(f=>({...f,[p.memberId]:{...f[p.memberId],[`${p.year}-${p.month}`]:true}}));
-      return {...p,status:"approved"};
-    }));
-    notify("Payment approved!");
+  async function approvePayment(id) {
+    const p = payments.find(x=>x.id===id);
+    if (!p) return;
+    try {
+      await dbApprovePayment(id, user.name, p.member_id||p.memberId, p.year, p.month);
+      getPayments().then(setPayments);
+      getFees(YEAR).then(setFees);
+      notify("Payment approved!");
+    } catch(e) { notify("Error approving. Try again.","error"); }
   }
 
-  function rejectPayment(id) {
-    setPayments(prev=>prev.map(p=>p.id!==id?p:{...p,status:"rejected"}));
-    notify("Payment rejected.", "error");
+  async function rejectPayment(id) {
+    try {
+      await dbRejectPayment(id, user.name);
+      getPayments().then(setPayments);
+      notify("Payment rejected.", "error");
+    } catch(e) { notify("Error rejecting. Try again.","error"); }
   }
 
   // member actions
-  function saveMember() {
+  async function saveMember() {
     if (!mForm.name.trim()||!mForm.pin||mForm.pin.length!==4) { notify("Fill all fields. PIN must be 4 digits.","error"); return; }
-    if (editTarget) {
-      setMembers(p=>p.map(m=>m.id===editTarget.id?{...m,...mForm}:m));
-      notify("Member updated!");
-    } else {
-      if (members.find(m=>m.phone===mForm.phone)) { notify("Phone number already exists!","error"); return; }
-      const id=Date.now();
-      setMembers(p=>[...p,{id,...mForm,joined:`${YEAR}-03`,active:true}]);
-      const nf={}; MONTHS.forEach((_,i)=>{nf[`${YEAR}-${i}`]=false;});
-      setFees(p=>({...p,[id]:nf}));
-      notify(`${mForm.name} added!`);
-    }
+    try {
+      if (editTarget) {
+        await dbUpdateMember(editTarget.id, mForm);
+        notify("Member updated!");
+      } else {
+        if (members.find(m=>m.phone===mForm.phone)) { notify("Phone number already exists!","error"); return; }
+        await dbAddMember({...mForm, joined:`${YEAR}-03`, active:true});
+        notify(`${mForm.name} added!`);
+      }
+      getMembers().then(setMembers);
+      getFees(YEAR).then(setFees);
+    } catch(e) { notify("Error saving member. Try again.","error"); return; }
     setMForm({name:"",phone:"",role:"Member",pin:""}); closeModal();
   }
 
-  function bulkImport(rows) {
-    let added=0;
-    rows.forEach(r=>{
-      if (members.find(m=>m.phone===r.phone)) return;
-      const id=Date.now()+added;
-      setMembers(p=>[...p,{id,...r,joined:`${YEAR}-03`,active:true}]);
-      const nf={}; MONTHS.forEach((_,i)=>{nf[`${YEAR}-${i}`]=false;});
-      setFees(p=>({...p,[id]:nf}));
-      added++;
-    });
-    closeModal();
-    notify(`${added} members imported!`);
+  async function bulkImport(rows) {
+    try {
+      const added = await dbBulkAdd(rows.map(r=>({...r,joined:`${YEAR}-03`,active:true})));
+      await getMembers().then(setMembers);
+      await getFees(YEAR).then(setFees);
+      closeModal();
+      notify(`${added.length} members imported!`);
+    } catch(e) { notify("Import failed. Try again.","error"); }
   }
 
-  function saveExpense() {
+  async function saveExpense() {
     if (!expForm.desc.trim()||!expForm.amount||!expForm.date) return;
-    if (editTarget) {
-      setExpenses(p=>p.map(e=>e.id===editTarget.id?{...e,...expForm,amount:Number(expForm.amount)}:e));
-      notify("Expense updated!");
-    } else {
-      setExpenses(p=>[...p,{id:Date.now(),...expForm,amount:Number(expForm.amount),addedBy:user.name}]);
-      notify("Expense added!");
-    }
+    try {
+      if (editTarget) {
+        await dbUpdateExpense(editTarget.id, {description:expForm.desc, amount:Number(expForm.amount), date:expForm.date, category:expForm.cat});
+        notify("Expense updated!");
+      } else {
+        await dbAddExpense({description:expForm.desc, amount:Number(expForm.amount), date:expForm.date, category:expForm.cat, added_by:user.name});
+        notify("Expense added!");
+      }
+      getExpenses().then(setExpenses);
+    } catch(e) { notify("Error saving expense.","error"); return; }
     setExpForm({desc:"",amount:"",date:"",cat:"Rent"}); closeModal();
   }
 
-  function saveIncome() {
+  async function saveIncome() {
     if (!incForm.desc.trim()||!incForm.amount||!incForm.date) { notify("Fill all required fields.","error"); return; }
-    if (editTarget) {
-      setIncome(p=>p.map(i=>i.id===editTarget.id?{...i,...incForm,amount:Number(incForm.amount)}:i));
-      notify("Income updated!");
-    } else {
-      setIncome(p=>[...p,{id:Date.now(),...incForm,amount:Number(incForm.amount),addedBy:user.name}]);
-      notify("Income entry added!");
-    }
+    try {
+      if (editTarget) {
+        await dbUpdateIncome(editTarget.id, {description:incForm.desc, amount:Number(incForm.amount), date:incForm.date, category:incForm.cat, from_name:incForm.fromName, notes:incForm.notes});
+        notify("Income updated!");
+      } else {
+        await dbAddIncome({description:incForm.desc, amount:Number(incForm.amount), date:incForm.date, category:incForm.cat, from_name:incForm.fromName||"", notes:incForm.notes||"", added_by:user.name});
+        notify("Income entry added!");
+      }
+      getIncome().then(setIncome);
+    } catch(e) { notify("Error saving income.","error"); return; }
     setIncForm({desc:"",amount:"",date:"",cat:"Donation",fromName:"",notes:""}); closeModal();
   }
 
-  function saveEvent() {
+  async function saveEvent() {
     if (!evForm.title.trim()||!evForm.date) return;
-    if (editTarget) {
-      setEvents(p=>p.map(e=>e.id===editTarget.id?{...e,...evForm}:e));
-    } else {
-      setEvents(p=>[...p,{id:Date.now(),...evForm,rsvp:{}}]);
-    }
-    notify("Event saved!"); setEvForm({title:"",date:"",time:"",location:"",desc:""}); closeModal();
+    try {
+      if (editTarget) {
+        await dbUpdateEvent(editTarget.id, {title:evForm.title, date:evForm.date, time:evForm.time, location:evForm.location, description:evForm.desc});
+      } else {
+        await dbAddEvent({title:evForm.title, date:evForm.date, time:evForm.time, location:evForm.location, description:evForm.desc, created_by:user.name});
+      }
+      getEvents().then(setEvents);
+      notify("Event saved!");
+    } catch(e) { notify("Error saving event.","error"); return; }
+    setEvForm({title:"",date:"",time:"",location:"",desc:""}); closeModal();
   }
 
-  function postAnn() {
+  async function postAnn() {
     if (!annForm.title.trim()||!annForm.body.trim()) return;
-    setAnn(p=>[{id:Date.now(),...annForm,postedBy:user.name,date:new Date().toISOString().slice(0,10),pinned:false},...p]);
-    setAnnForm({title:"",body:""}); closeModal(); notify("Announcement posted!");
+    try {
+      await dbAddAnn({title:annForm.title, body:annForm.body, posted_by:user.name, pinned:false});
+      getAnnouncements().then(setAnn);
+      setAnnForm({title:"",body:""}); closeModal(); notify("Announcement posted!");
+    } catch(e) { notify("Error posting announcement.","error"); }
   }
 
-  function changePin() {
-    if (pinForm.old!==user.pin)   { setPinErr("Current PIN is wrong."); return; }
-    if (pinForm.new1.length!==4)  { setPinErr("New PIN must be 4 digits."); return; }
+  async function changePin() {
+    if (pinForm.old!==user.pin)    { setPinErr("Current PIN is wrong."); return; }
+    if (pinForm.new1.length!==4)   { setPinErr("New PIN must be 4 digits."); return; }
     if (pinForm.new1!==pinForm.new2){ setPinErr("PINs don't match."); return; }
-    const updated={...user,pin:pinForm.new1};
-    setMembers(p=>p.map(m=>m.id===user.id?updated:m));
-    setUser(updated); setPinForm({old:"",new1:"",new2:""}); closeModal(); notify("PIN changed!");
+    try {
+      await dbUpdateMember(user.id, {pin:pinForm.new1});
+      const updated={...user,pin:pinForm.new1};
+      setUser(updated);
+      getMembers().then(setMembers);
+      setPinForm({old:"",new1:"",new2:""}); closeModal(); notify("PIN changed!");
+    } catch(e) { setPinErr("Error changing PIN. Try again."); }
   }
 
   function exportReport() {
@@ -852,6 +882,12 @@ export default function App() {
     {id:"profile",icon:"◉",  label:"Me"},
   ];
 
+  if (loading) return (
+    <div style={{minHeight:"100vh",background:G.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
+      <BTLogo size={64} />
+      <div style={{fontSize:13,color:G.text3,fontFamily:"monospace",letterSpacing:2,animation:"fadeIn 1s infinite alternate"}}>LOADING...</div>
+    </div>
+  );
   if (!user) return <LoginScreen members={members} settings={settings} onLogin={m=>{setUser(m);setTab("home");}} />;
 
   const rc = ROLE_META[role].color;
@@ -1028,7 +1064,19 @@ export default function App() {
             ))}
             <div style={{display:"flex",gap:8,marginTop:4}}>
               <Btn variant="ghost" style={{flex:1}} onClick={closeModal}>Cancel</Btn>
-              <Btn variant="green" style={{flex:2}} onClick={()=>{setSettings(settForm);closeModal();notify("Settings saved!");}}>Save</Btn>
+              <Btn variant="green" style={{flex:2}} onClick={async()=>{
+                try {
+                  const updates = {
+                    club_name:settForm.clubName, location:settForm.location,
+                    founded:settForm.founded, reg_no:settForm.regNo,
+                    monthly_due:settForm.monthlyDue, gpay_number:settForm.gpayNumber,
+                    gpay_name:settForm.gpayName, upi_id:settForm.upiId,
+                    gpay_qr_url:settForm.gpayQR, upi_qr_url:settForm.upiQR,
+                  };
+                  await dbSaveSettings(updates);
+                  setSettings(settForm); closeModal(); notify("Settings saved!");
+                } catch(e) { notify("Error saving settings.","error"); }
+              }}>Save</Btn>
             </div>
           </div>
         </Modal>
@@ -1207,7 +1255,7 @@ export default function App() {
                       <div style={{fontSize:11,color:G.text3,marginTop:2}}>{paidCount(fees,m.id)}/12 months paid</div>
                     </div>
                     {CAN.markFees(role) ? (
-                      <button onClick={()=>{setFees(p=>({...p,[m.id]:{...p[m.id],[key]:!p[m.id]?.[key]}}));notify("Updated!");}} style={{padding:"7px 14px",borderRadius:9,border:`1px solid ${paid?G.green+"44":G.red+"44"}`,background:paid?`${G.green}18`:G.redDim,color:paid?G.green2:G.red,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"monospace",transition:"all .15s"}}>
+                      <button onClick={async()=>{const newVal=!fees[m.id]?.[key];setFees(p=>({...p,[m.id]:{...p[m.id],[key]:newVal}}));try{await dbToggleFee(m.id,YEAR,selMonth,newVal);}catch(e){notify("Sync error","error");}notify("Updated!");}} style={{padding:"7px 14px",borderRadius:9,border:`1px solid ${paid?G.green+"44":G.red+"44"}`,background:paid?`${G.green}18`:G.redDim,color:paid?G.green2:G.red,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"monospace",transition:"all .15s"}}>
                         {paid?"✓ PAID":"✗ DUE"}
                       </button>
                     ) : isMe ? (
@@ -1239,7 +1287,7 @@ export default function App() {
                       {MONTHS.map((_,i)=>{
                         const k=`${YEAR}-${i}`, p=fees[m.id]?.[k];
                         return <td key={i} style={{textAlign:"center",paddingBottom:6}}>
-                          <button onClick={()=>CAN.markFees(role)&&(setFees(f=>({...f,[m.id]:{...f[m.id],[k]:!f[m.id]?.[k]}})),notify("Updated!"))} style={{width:20,height:20,borderRadius:5,border:"none",cursor:CAN.markFees(role)?"pointer":"default",background:p?`${G.green}20`:G.redDim,color:p?G.green2:G.red,fontSize:9,fontWeight:700,transition:"all .15s"}}>{p?"✓":"✗"}</button>
+                          <button onClick={async()=>{if(!CAN.markFees(role))return;const newVal=!fees[m.id]?.[k];setFees(f=>({...f,[m.id]:{...f[m.id],[k]:newVal}}));notify("Updated!");try{await dbToggleFee(m.id,YEAR,i,newVal);}catch(e){notify("Sync error","error");}}} style={{width:20,height:20,borderRadius:5,border:"none",cursor:CAN.markFees(role)?"pointer":"default",background:p?`${G.green}20`:G.redDim,color:p?G.green2:G.red,fontSize:9,fontWeight:700,transition:"all .15s"}}>{p?"✓":"✗"}</button>
                         </td>;
                       })}
                     </tr>
@@ -1279,7 +1327,7 @@ export default function App() {
                     {CAN.addEvent(role)&&(
                       <div style={{display:"flex",flexDirection:"column",gap:4}}>
                         <button onClick={()=>{setEvForm({title:ev.title,date:ev.date,time:ev.time,location:ev.location,desc:ev.desc});setEditTarget(ev);setModal("editEvent");}} style={{background:"none",border:"none",color:G.text3,cursor:"pointer",fontSize:15,padding:4}}>✎</button>
-                        <button onClick={()=>setEvents(p=>p.filter(e=>e.id!==ev.id))} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:15,padding:4}}>✕</button>
+                        <button onClick={async()=>{try{await dbDeleteEvent(ev.id);getEvents().then(setEvents);}catch(e){notify("Error","error");}}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:15,padding:4}}>✕</button>
                       </div>
                     )}
                   </div>
@@ -1289,14 +1337,14 @@ export default function App() {
                     {CAN.markAttendance(role) ? (
                       <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
                         {activeMembers.map(m=>(
-                          <button key={m.id} onClick={()=>setEvents(p=>p.map(e=>e.id===ev.id?{...e,rsvp:{...e.rsvp,[m.id]:!e.rsvp[m.id]}}:e))}
+                          <button key={m.id} onClick={async()=>{const newVal=!ev.rsvp[m.id];setEvents(p=>p.map(e=>e.id===ev.id?{...e,rsvp:{...e.rsvp,[m.id]:newVal}}:e));try{await dbToggleAttendance(ev.id,m.id,newVal);}catch(err){}}}
                             style={{padding:"4px 10px",borderRadius:7,border:`1px solid ${ev.rsvp[m.id]?G.green+"44":G.border2}`,background:ev.rsvp[m.id]?`${G.green}18`:G.bg3,color:ev.rsvp[m.id]?G.green2:G.text3,fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"Sora,sans-serif"}}>
                             {ev.rsvp[m.id]?"✓ ":""}{m.name.split(" ")[0]}
                           </button>
                         ))}
                       </div>
                     ) : (
-                      <button onClick={()=>setEvents(p=>p.map(e=>e.id===ev.id?{...e,rsvp:{...e.rsvp,[user.id]:!e.rsvp[user.id]}}:e))}
+                      <button onClick={async()=>{const newVal=!ev.rsvp[user.id];setEvents(p=>p.map(e=>e.id===ev.id?{...e,rsvp:{...e.rsvp,[user.id]:newVal}}:e));try{await dbToggleAttendance(ev.id,user.id,newVal);}catch(err){}}}
                         style={{padding:"7px 18px",borderRadius:9,border:`1px solid ${iGoing?G.green+"44":G.border2}`,background:iGoing?`${G.green}18`:G.bg3,color:iGoing?G.green2:G.text2,fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"monospace"}}>
                         {iGoing?"✓ Going":"RSVP"}
                       </button>
@@ -1323,8 +1371,8 @@ export default function App() {
                     <div style={{fontWeight:700,fontSize:15}}>{a.title}</div>
                   </div>
                   <div style={{display:"flex",gap:6,marginLeft:10}}>
-                    {CAN.pinAnnouncement(role)&&<button onClick={()=>setAnn(p=>p.map(x=>x.id===a.id?{...x,pinned:!x.pinned}:x))} style={{background:"none",border:"none",color:a.pinned?G.green2:G.text3,cursor:"pointer",fontSize:16}}>📌</button>}
-                    {CAN.deleteAnnouncement(role)&&<button onClick={()=>setAnn(p=>p.filter(x=>x.id!==a.id))} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:16}}>✕</button>}
+                    {CAN.pinAnnouncement(role)&&<button onClick={async()=>{try{await dbTogglePin(a.id,!a.pinned);getAnnouncements().then(setAnn);}catch(e){}}} style={{background:"none",border:"none",color:a.pinned?G.green2:G.text3,cursor:"pointer",fontSize:16}}>📌</button>}
+                    {CAN.deleteAnnouncement(role)&&<button onClick={async()=>{try{await dbDeleteAnn(a.id);getAnnouncements().then(setAnn);}catch(e){}}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:16}}>✕</button>}
                   </div>
                 </div>
                 <div style={{fontSize:13,color:G.text2,lineHeight:1.7}}>{a.body}</div>
@@ -1408,7 +1456,7 @@ export default function App() {
                       {CAN.editIncome(role)&&(
                         <div style={{display:"flex",gap:4}}>
                           <button onClick={()=>{setIncForm({desc:inc.desc,amount:String(inc.amount),date:inc.date,cat:inc.cat,fromName:inc.fromName||"",notes:inc.notes||""});setEditTarget(inc);setModal("editIncome");}} style={{background:"none",border:"none",color:G.text3,cursor:"pointer",fontSize:14,padding:2}}>✎</button>
-                          <button onClick={()=>{setIncome(p=>p.filter(i=>i.id!==inc.id));notify("Income entry deleted!");}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:14,padding:2}}>✕</button>
+                          <button onClick={async()=>{try{await dbDeleteIncome(inc.id);getIncome().then(setIncome);notify("Deleted!");}catch(err){notify("Error","error");}}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:14,padding:2}}>✕</button>
                         </div>
                       )}
                     </div>
@@ -1443,7 +1491,7 @@ export default function App() {
                     {CAN.addExpense(role)&&(
                       <div style={{display:"flex",gap:4}}>
                         <button onClick={()=>{setExpForm({desc:exp.desc,amount:String(exp.amount),date:exp.date,cat:exp.cat});setEditTarget(exp);setModal("editExpense");}} style={{background:"none",border:"none",color:G.text3,cursor:"pointer",fontSize:14,padding:2}}>✎</button>
-                        <button onClick={()=>{setExpenses(p=>p.filter(e=>e.id!==exp.id));notify("Deleted!");}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:14,padding:2}}>✕</button>
+                        <button onClick={async()=>{try{await dbDeleteExpense(exp.id);getExpenses().then(setExpenses);notify("Deleted!");}catch(err){notify("Error","error");}}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:14,padding:2}}>✕</button>
                       </div>
                     )}
                   </div>
@@ -1494,8 +1542,8 @@ export default function App() {
                     <div style={{display:"flex",gap:5}}>
                       {CAN.editMember(role)&&<button onClick={()=>{setMForm({name:m.name,phone:m.phone,role:m.role,pin:m.pin});setEditTarget(m);setModal("editMember");}} style={{background:G.bg3,border:"none",color:G.text2,cursor:"pointer",padding:"5px 10px",borderRadius:7,fontSize:12,fontFamily:"Sora,sans-serif"}}>Edit</button>}
                       {CAN.removeMember(role)&&(m.active
-                        ? <button onClick={()=>{setMembers(p=>p.map(x=>x.id===m.id?{...x,active:false}:x));notify("Deactivated!");}} style={{background:G.redDim,border:`1px solid ${G.red}33`,color:G.red,cursor:"pointer",padding:"5px 10px",borderRadius:7,fontSize:12,fontFamily:"Sora,sans-serif"}}>Deactivate</button>
-                        : <button onClick={()=>{setMembers(p=>p.map(x=>x.id===m.id?{...x,active:true}:x));notify("Restored!");}} style={{background:`${G.green}18`,border:`1px solid ${G.green}33`,color:G.green2,cursor:"pointer",padding:"5px 10px",borderRadius:7,fontSize:12,fontFamily:"Sora,sans-serif"}}>Restore</button>
+                        ? <button onClick={async()=>{try{await dbUpdateMember(m.id,{active:false});getMembers().then(setMembers);notify("Deactivated!");}catch(e){notify("Error","error");}}} style={{background:G.redDim,border:`1px solid ${G.red}33`,color:G.red,cursor:"pointer",padding:"5px 10px",borderRadius:7,fontSize:12,fontFamily:"Sora,sans-serif"}}>Deactivate</button>
+                        : <button onClick={async()=>{try{await dbUpdateMember(m.id,{active:true});getMembers().then(setMembers);notify("Restored!");}catch(e){notify("Error","error");}}} style={{background:`${G.green}18`,border:`1px solid ${G.green}33`,color:G.green2,cursor:"pointer",padding:"5px 10px",borderRadius:7,fontSize:12,fontFamily:"Sora,sans-serif"}}>Restore</button>
                       )}
                     </div>
                   </div>
