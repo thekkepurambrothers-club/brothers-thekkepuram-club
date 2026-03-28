@@ -1,4 +1,40 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import {
+  supabase,
+  loginWithPhone,
+  getMembers,
+  addMember,
+  updateMember,
+  bulkAddMembers,
+  getFees,
+  toggleFee,
+  getPayments,
+  submitPayment,
+  approvePayment,
+  rejectPayment,
+  getIncome,
+  addIncome,
+  updateIncome,
+  deleteIncome,
+  getExpenses,
+  addExpense,
+  updateExpense,
+  deleteExpense,
+  getEvents,
+  addEvent,
+  updateEvent,
+  deleteEvent,
+  toggleAttendance,
+  getAnnouncements,
+  addAnnouncement,
+  togglePinAnnouncement,
+  deleteAnnouncement,
+  getSettings,
+  saveSettings,
+  subscribeToPayments,
+  subscribeToFees,
+  subscribeToAnnouncements,
+} from './supabase-integration';
 
 // ─── THEME ────────────────────────────────────────────────────────────────────
 const G = {
@@ -73,6 +109,13 @@ const INIT_EXPENSES = [
   { id:5, desc:"Hall Rent – March",    amount:1500, date:"2026-03-05", cat:"Rent",        addedBy:"Rahul Das" },
 ];
 
+const INIT_INCOME = [
+  { id:1, desc:"March Dues Collection",     amount:700,  date:"2026-03-25", cat:"Monthly Dues",  fromName:"",              addedBy:"Rahul Das",  notes:"7 members × ₹100" },
+  { id:2, desc:"Ramadan Donation",          amount:500,  date:"2026-03-20", cat:"Donation",      fromName:"Mohammed Ali",  addedBy:"Rahul Das",  notes:"" },
+  { id:3, desc:"Cricket Sponsor – Adidas",  amount:2000, date:"2026-03-15", cat:"Sponsorship",   fromName:"Adidas Store",  addedBy:"Arjun Nair", notes:"Banner display for 1 month" },
+  { id:4, desc:"Cricket Match Entry Fees",  amount:300,  date:"2026-03-10", cat:"Event Income",  fromName:"",              addedBy:"Vishnu Kumar",notes:"30 spectators × ₹10" },
+];
+
 const INIT_ANNOUNCEMENTS = [
   { id:1, title:"Club Reopening! 🎉", body:"We are officially reopening. Let's keep it active this time. Monthly meetings every last Thursday.", postedBy:"Arjun Nair", date:"2026-03-15", pinned:true },
   { id:2, title:"March Dues Deadline", body:"Please pay your March dues before the 25th. Use the Pay Dues button in the app or contact Treasurer.", postedBy:"Vishnu Kumar", date:"2026-03-18", pinned:false },
@@ -108,6 +151,8 @@ const CAN = {
   changeDues:        r => r==="President"||r==="Treasurer",
   exportReport:      r => r==="President"||r==="Treasurer"||r==="Secretary",
   bulkImport:        r => r==="President"||r==="Secretary",
+  addIncome:         r => r==="President"||r==="Secretary"||r==="Treasurer",
+  editIncome:        r => r==="President"||r==="Treasurer",
 };
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -223,7 +268,7 @@ function Label({ children }) {
 function Divider() { return <div style={{height:1,background:G.border,margin:"12px 0"}} />; }
 
 // ─── QR CODE (SVG placeholder that looks like a real QR) ─────────────────────
-/*function QRCode({ value, size=180 }) {
+function QRCode({ value, size=180 }) {
   // Visual QR-like grid for demo (real QR needs a library)
   const seed = value.split("").reduce((a,c)=>a+c.charCodeAt(0),0);
   const cells = 21;
@@ -239,7 +284,7 @@ function Divider() { return <div style={{height:1,background:G.border,margin:"12
       {grid.map((on,i)=> on ? <rect key={i} x={(i%cells)*cell} y={Math.floor(i/cells)*cell} width={cell} height={cell} fill="#000"/> : null)}
     </svg>
   );
-}*/
+}
 
 // ─── PAY DUES MODAL ───────────────────────────────────────────────────────────
 function PayDuesModal({ user, settings, selMonth, onSubmit, onClose, existingPayment }) {
@@ -628,6 +673,7 @@ export default function App() {
   const [members, setMembers]   = useState(INIT_MEMBERS);
   const [fees, setFees]         = useState(INIT_FEES);
   const [expenses, setExpenses] = useState(INIT_EXPENSES);
+  const [income, setIncome]     = useState(INIT_INCOME);
   const [announcements, setAnn] = useState(INIT_ANNOUNCEMENTS);
   const [events, setEvents]     = useState(INIT_EVENTS);
   const [settings, setSettings] = useState(INIT_SETTINGS);
@@ -642,18 +688,31 @@ export default function App() {
   // forms
   const [mForm,   setMForm]   = useState({name:"",phone:"",role:"Member",pin:""});
   const [expForm, setExpForm] = useState({desc:"",amount:"",date:"",cat:"Rent"});
+  const [incForm, setIncForm] = useState({desc:"",amount:"",date:"",cat:"Donation",fromName:"",notes:""});
   const [evForm,  setEvForm]  = useState({title:"",date:"",time:"",location:"",desc:""});
   const [annForm, setAnnForm] = useState({title:"",body:""});
   const [pinForm, setPinForm] = useState({old:"",new1:"",new2:""});
   const [pinErr,  setPinErr]  = useState("");
   const [settForm, setSettForm] = useState({...INIT_SETTINGS});
+  // ── LOAD DATA FROM SUPABASE ON STARTUP ──
+  useEffect(() => {
+    getMembers().then(setMembers);
+    getFees(2026).then(setFees);
+    getExpenses().then(setExpenses);
+    getIncome().then(setIncome);
+    getPayments().then(setPayments);
+    getEvents().then(setEvents);
+    getAnnouncements().then(setAnn);
+    getSettings().then(setSettings);
+  }, []);
 
   const role          = user?.role;
   const activeMembers = members.filter(m=>m.active);
   const due           = settings.monthlyDue;
   const totalCollected= activeMembers.reduce((s,m)=>s+paidCount(fees,m.id)*due,0);
   const totalExp      = expenses.reduce((s,e)=>s+e.amount,0);
-  const balance       = totalCollected - totalExp;
+  const totalIncome   = income.reduce((s,i)=>s+i.amount,0);
+  const balance       = totalCollected + totalIncome - totalExp;
   const monthDefaulters = activeMembers.filter(m=>!fees[m.id]?.[`${YEAR}-${selMonth}`]);
   const monthPaid       = activeMembers.filter(m=> fees[m.id]?.[`${YEAR}-${selMonth}`]);
   const pendingPayments = payments.filter(p=>p.status==="pending");
@@ -727,6 +786,18 @@ export default function App() {
     setExpForm({desc:"",amount:"",date:"",cat:"Rent"}); closeModal();
   }
 
+  function saveIncome() {
+    if (!incForm.desc.trim()||!incForm.amount||!incForm.date) { notify("Fill all required fields.","error"); return; }
+    if (editTarget) {
+      setIncome(p=>p.map(i=>i.id===editTarget.id?{...i,...incForm,amount:Number(incForm.amount)}:i));
+      notify("Income updated!");
+    } else {
+      setIncome(p=>[...p,{id:Date.now(),...incForm,amount:Number(incForm.amount),addedBy:user.name}]);
+      notify("Income entry added!");
+    }
+    setIncForm({desc:"",amount:"",date:"",cat:"Donation",fromName:"",notes:""}); closeModal();
+  }
+
   function saveEvent() {
     if (!evForm.title.trim()||!evForm.date) return;
     if (editTarget) {
@@ -773,6 +844,7 @@ export default function App() {
   const NAV = [
     {id:"home",   icon:"⌂",  label:"Home"},
     {id:"fees",   icon:"₹",  label:"Fees"},
+    {id:"ledger", icon:"📒", label:"Ledger"},
     {id:"events", icon:"📅", label:"Events"},
     {id:"notice", icon:"📢", label:"Notice"},
     ...(CAN.addMember(role)||CAN.markFees(role)||CAN.changeSettings(role)?[{id:"admin",icon:"⚙",label:"Admin"}]:[]),
@@ -833,12 +905,33 @@ export default function App() {
             <div><Label>DATE</Label><Inp type="date" value={expForm.date} onChange={e=>setExpForm(p=>({...p,date:e.target.value}))} /></div>
             <div><Label>CATEGORY</Label>
               <Sel value={expForm.cat} onChange={e=>setExpForm(p=>({...p,cat:e.target.value}))}>
-                {["Rent","Maintenance","Equipment","Event","Other"].map(c=><option key={c}>{c}</option>)}
+                {["Rent","Maintenance","Equipment","Event","Salary","Miscellaneous"].map(c=><option key={c}>{c}</option>)}
               </Sel>
             </div>
             <div style={{display:"flex",gap:8,marginTop:4}}>
               <Btn variant="ghost" style={{flex:1}} onClick={closeModal}>Cancel</Btn>
               <Btn variant="green" style={{flex:2}} onClick={saveExpense}>{modal==="editExpense"?"Save":"Add"}</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {(modal==="addIncome"||modal==="editIncome")&&(
+        <Modal title={modal==="editIncome"?"Edit Income":"Add Income"} onClose={closeModal}>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div><Label>DESCRIPTION</Label><Inp placeholder="e.g. Ramadan Donation" value={incForm.desc} onChange={e=>setIncForm(p=>({...p,desc:e.target.value}))} /></div>
+            <div><Label>AMOUNT (₹)</Label><Inp type="number" placeholder="Amount received" value={incForm.amount} onChange={e=>setIncForm(p=>({...p,amount:e.target.value}))} /></div>
+            <div><Label>DATE</Label><Inp type="date" value={incForm.date} onChange={e=>setIncForm(p=>({...p,date:e.target.value}))} /></div>
+            <div><Label>CATEGORY</Label>
+              <Sel value={incForm.cat} onChange={e=>setIncForm(p=>({...p,cat:e.target.value}))}>
+                {["Donation","Sponsorship","Event Income","Monthly Dues","Miscellaneous"].map(c=><option key={c}>{c}</option>)}
+              </Sel>
+            </div>
+            <div><Label>FROM (NAME / ORGANIZATION)</Label><Inp placeholder="e.g. Adidas Store, Mohammed Ali..." value={incForm.fromName} onChange={e=>setIncForm(p=>({...p,fromName:e.target.value}))} /></div>
+            <div><Label>NOTES (OPTIONAL)</Label><Inp placeholder="Any extra details..." value={incForm.notes} onChange={e=>setIncForm(p=>({...p,notes:e.target.value}))} /></div>
+            <div style={{display:"flex",gap:8,marginTop:4}}>
+              <Btn variant="ghost" style={{flex:1}} onClick={closeModal}>Cancel</Btn>
+              <Btn variant="green" style={{flex:2}} onClick={saveIncome}>{modal==="editIncome"?"Save":"Add Income"}</Btn>
             </div>
           </div>
         </Modal>
@@ -974,7 +1067,12 @@ export default function App() {
               <div style={{position:"absolute",top:-20,right:-20,width:100,height:100,borderRadius:"50%",background:`${G.green}08`}} />
               <div style={{fontSize:10,color:G.green2,fontFamily:"monospace",letterSpacing:2,textTransform:"uppercase",marginBottom:6}}>Club Balance</div>
               <div style={{fontSize:36,fontWeight:800,color:balance>=0?G.green2:G.red,fontFamily:"monospace",letterSpacing:"-1px"}}>₹{balance.toLocaleString()}</div>
-              <div style={{fontSize:12,color:G.text3,marginTop:6}}>₹{totalCollected.toLocaleString()} collected · ₹{totalExp.toLocaleString()} spent</div>
+              <div style={{fontSize:12,color:G.text3,marginTop:6}}>₹{(totalCollected+totalIncome).toLocaleString()} in · ₹{totalExp.toLocaleString()} out</div>
+            <div style={{display:"flex",gap:12,marginTop:8}}>
+              <div style={{fontSize:11,color:G.green2}}>📥 Dues ₹{totalCollected.toLocaleString()}</div>
+              <div style={{fontSize:11,color:G.blue}}>💝 Other ₹{totalIncome.toLocaleString()}</div>
+              <div style={{fontSize:11,color:G.red}}>📤 Spent ₹{totalExp.toLocaleString()}</div>
+            </div>
             </div>
 
             {/* Stats */}
@@ -1235,6 +1333,125 @@ export default function App() {
           </div>
         )}
 
+
+        {/* ══ LEDGER ══ */}
+        {tab==="ledger"&&(
+          <div className="fade">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end",marginBottom:18}}>
+              <div>
+                <div style={{fontSize:22,fontWeight:800,letterSpacing:"-0.6px"}}>Ledger</div>
+                <div style={{color:G.text3,fontSize:12,marginTop:3}}>All income & expenses</div>
+              </div>
+              {CAN.addIncome(role)&&<Btn variant="green" style={{padding:"8px 14px",fontSize:12}} onClick={()=>{setIncForm({desc:"",amount:"",date:"",cat:"Donation",fromName:"",notes:""});setEditTarget(null);setModal("addIncome");}}>+ Income</Btn>}
+            </div>
+
+            {/* Summary cards */}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:16}}>
+              {[
+                {l:"Total In",    v:`₹${(totalCollected+totalIncome).toLocaleString()}`, c:G.green2},
+                {l:"Total Out",   v:`₹${totalExp.toLocaleString()}`,                     c:G.red},
+                {l:"Net Balance", v:`₹${balance.toLocaleString()}`,                      c:balance>=0?G.green2:G.red},
+              ].map(s=>(
+                <Card key={s.l} style={{textAlign:"center",padding:"14px 8px"}}>
+                  <div style={{fontSize:16,fontWeight:800,color:s.c,fontFamily:"monospace"}}>{s.v}</div>
+                  <div style={{fontSize:10,color:G.text3,marginTop:4}}>{s.l}</div>
+                </Card>
+              ))}
+            </div>
+
+            {/* Income breakdown */}
+            <Card style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                <div style={{fontSize:13,fontWeight:700,color:G.green2}}>📥 Income Breakdown</div>
+                <div style={{fontFamily:"monospace",fontSize:13,color:G.green2,fontWeight:700}}>₹{(totalCollected+totalIncome).toLocaleString()}</div>
+              </div>
+              {[
+                {l:"Monthly Dues",  v:totalCollected, c:G.green2},
+                {l:"Donations",     v:income.filter(i=>i.cat==="Donation").reduce((s,i)=>s+i.amount,0),     c:G.blue},
+                {l:"Sponsorships",  v:income.filter(i=>i.cat==="Sponsorship").reduce((s,i)=>s+i.amount,0),  c:G.gold},
+                {l:"Event Income",  v:income.filter(i=>i.cat==="Event Income").reduce((s,i)=>s+i.amount,0), c:"#a78bfa"},
+                {l:"Miscellaneous", v:income.filter(i=>i.cat==="Miscellaneous").reduce((s,i)=>s+i.amount,0),c:G.text2},
+              ].filter(r=>r.v>0).map(r=>(
+                <div key={r.l} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${G.border}`}}>
+                  <span style={{fontSize:12,color:G.text2}}>{r.l}</span>
+                  <span style={{fontSize:12,fontWeight:700,color:r.c,fontFamily:"monospace"}}>₹{r.v.toLocaleString()}</span>
+                </div>
+              ))}
+            </Card>
+
+            {/* Income entries */}
+            <div style={{marginBottom:4,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{fontSize:13,fontWeight:700,color:G.text}}>Income Entries</div>
+            </div>
+            {income.map(inc=>{
+              const catColors={"Monthly Dues":G.green2,Donation:G.blue,Sponsorship:G.gold,"Event Income":"#a78bfa",Miscellaneous:G.text2};
+              const cc=catColors[inc.cat]||G.text2;
+              return (
+                <Card key={inc.id} style={{marginBottom:8}}>
+                  <div style={{display:"flex",alignItems:"flex-start",gap:12}}>
+                    <div style={{background:`${cc}18`,border:`1px solid ${cc}33`,borderRadius:10,padding:"8px 10px",textAlign:"center",minWidth:46,flexShrink:0}}>
+                      <div style={{fontSize:14,fontWeight:800,color:cc,fontFamily:"monospace"}}>{new Date(inc.date).getDate()}</div>
+                      <div style={{fontSize:9,color:`${cc}88`,textTransform:"uppercase"}}>{["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][new Date(inc.date).getMonth()]}</div>
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,fontSize:13}}>{inc.desc}</div>
+                      <div style={{display:"flex",gap:6,marginTop:4,flexWrap:"wrap"}}>
+                        <Chip label={inc.cat} color={cc} />
+                        {inc.fromName&&<span style={{fontSize:11,color:G.text3}}>from {inc.fromName}</span>}
+                      </div>
+                      {inc.notes&&<div style={{fontSize:11,color:G.text3,marginTop:3}}>{inc.notes}</div>}
+                      <div style={{fontSize:11,color:G.text3,marginTop:2}}>Added by {inc.addedBy}</div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
+                      <div style={{fontFamily:"monospace",color:G.green2,fontWeight:800,fontSize:14}}>+₹{inc.amount.toLocaleString()}</div>
+                      {CAN.editIncome(role)&&(
+                        <div style={{display:"flex",gap:4}}>
+                          <button onClick={()=>{setIncForm({desc:inc.desc,amount:String(inc.amount),date:inc.date,cat:inc.cat,fromName:inc.fromName||"",notes:inc.notes||""});setEditTarget(inc);setModal("editIncome");}} style={{background:"none",border:"none",color:G.text3,cursor:"pointer",fontSize:14,padding:2}}>✎</button>
+                          <button onClick={()=>{setIncome(p=>p.filter(i=>i.id!==inc.id));notify("Income entry deleted!");}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:14,padding:2}}>✕</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+
+            <Divider />
+
+            {/* Expense entries */}
+            <div style={{marginBottom:12,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{fontSize:13,fontWeight:700,color:G.text}}>Expense Entries</div>
+              {CAN.addExpense(role)&&<Btn variant="ghost" style={{padding:"6px 12px",fontSize:11}} onClick={()=>{setExpForm({desc:"",amount:"",date:"",cat:"Rent"});setEditTarget(null);setModal("addExpense");}}>+ Expense</Btn>}
+            </div>
+            {expenses.map(exp=>(
+              <Card key={exp.id} style={{marginBottom:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{background:`${G.red}12`,border:`1px solid ${G.red}22`,borderRadius:10,padding:"8px 10px",textAlign:"center",minWidth:46,flexShrink:0}}>
+                    <div style={{fontSize:14,fontWeight:800,color:G.red,fontFamily:"monospace"}}>{new Date(exp.date).getDate()}</div>
+                    <div style={{fontSize:9,color:`${G.red}88`,textTransform:"uppercase"}}>{["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][new Date(exp.date).getMonth()]}</div>
+                  </div>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,fontSize:13}}>{exp.desc}</div>
+                    <div style={{display:"flex",gap:6,marginTop:4}}>
+                      <Chip label={exp.cat} color={G.red} />
+                    </div>
+                    <div style={{fontSize:11,color:G.text3,marginTop:2}}>{exp.addedBy}</div>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
+                    <div style={{fontFamily:"monospace",color:G.red,fontWeight:800,fontSize:14}}>−₹{exp.amount.toLocaleString()}</div>
+                    {CAN.addExpense(role)&&(
+                      <div style={{display:"flex",gap:4}}>
+                        <button onClick={()=>{setExpForm({desc:exp.desc,amount:String(exp.amount),date:exp.date,cat:exp.cat});setEditTarget(exp);setModal("editExpense");}} style={{background:"none",border:"none",color:G.text3,cursor:"pointer",fontSize:14,padding:2}}>✎</button>
+                        <button onClick={()=>{setExpenses(p=>p.filter(e=>e.id!==exp.id));notify("Deleted!");}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:14,padding:2}}>✕</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+
         {/* ══ ADMIN ══ */}
         {tab==="admin"&&(
           <div className="fade">
@@ -1285,29 +1502,20 @@ export default function App() {
               </Card>
             )}
 
-            {/* Expenses */}
-            {CAN.addExpense(role)&&(
-              <Card style={{marginBottom:14}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            {/* Ledger shortcut */}
+            {CAN.addIncome(role)&&(
+              <Card style={{marginBottom:14,borderColor:`${G.green}33`,cursor:"pointer"}} onClick={()=>setTab("ledger")}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                   <div>
-                    <div style={{fontWeight:700,fontSize:14}}>Expenses</div>
-                    <div style={{fontSize:11,color:G.text3,marginTop:2}}>Total: ₹{totalExp.toLocaleString()}</div>
+                    <div style={{fontWeight:700,fontSize:14}}>Income & Expenses</div>
+                    <div style={{fontSize:11,color:G.text3,marginTop:3}}>
+                      Total in: <span style={{color:G.green2}}>₹{(totalCollected+totalIncome).toLocaleString()}</span> ·
+                      Total out: <span style={{color:G.red}}> ₹{totalExp.toLocaleString()}</span> ·
+                      Balance: <span style={{color:balance>=0?G.green2:G.red}}> ₹{balance.toLocaleString()}</span>
+                    </div>
                   </div>
-                  <Btn variant="green" style={{padding:"7px 12px",fontSize:11}} onClick={()=>{setExpForm({desc:"",amount:"",date:"",cat:"Rent"});setEditTarget(null);setModal("addExpense");}}>+ Add</Btn>
+                  <div style={{fontSize:20,color:G.text3}}>→</div>
                 </div>
-                {expenses.map(e=>(
-                  <div key={e.id} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${G.border}`,gap:10}}>
-                    <div style={{flex:1}}>
-                      <div style={{fontWeight:600,fontSize:13}}>{e.desc}</div>
-                      <div style={{fontSize:11,color:G.text3,marginTop:2}}>{e.date} · {e.cat}</div>
-                    </div>
-                    <div style={{fontFamily:"monospace",color:G.red,fontWeight:700,fontSize:13}}>−₹{e.amount}</div>
-                    <div style={{display:"flex",gap:4}}>
-                      <button onClick={()=>{setExpForm({desc:e.desc,amount:String(e.amount),date:e.date,cat:e.cat});setEditTarget(e);setModal("editExpense");}} style={{background:"none",border:"none",color:G.text3,cursor:"pointer",fontSize:15}}>✎</button>
-                      <button onClick={()=>{setExpenses(p=>p.filter(x=>x.id!==e.id));notify("Deleted!");}} style={{background:"none",border:"none",color:`${G.red}66`,cursor:"pointer",fontSize:15}}>✕</button>
-                    </div>
-                  </div>
-                ))}
               </Card>
             )}
 
