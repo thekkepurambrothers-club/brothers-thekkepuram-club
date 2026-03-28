@@ -97,7 +97,7 @@ export async function submitPayment(payment, screenshotFile) {
   // Upload screenshot to Supabase Storage if provided
   if (screenshotFile) {
     const filename = `${Date.now()}_${screenshotFile.name}`;
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const { data: _, error: uploadError } = await supabase.storage
       .from('screenshots')
       .upload(filename, screenshotFile);
     if (!uploadError) {
