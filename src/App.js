@@ -53,8 +53,10 @@ const INIT_SETTINGS = {
   gpayNumber: "9876543212",
   gpayName: "Rahul Das",
   upiId: "9876543212@okaxis",
-  gpayQR: null,   // base64 image string — admin uploads via settings
-  upiQR:  null,   // base64 image string — admin uploads via settings
+  gpayQR: null,
+  upiQR:  null,
+  startMonth: 3,   // 0=Jan ... 11=Dec — hide months before this
+  startYear:  2026,
 };
 
 const INIT_MEMBERS = [
@@ -189,8 +191,13 @@ function BTLogo({ size=48 }) {
 }
 
 // ─── UI ATOMS ─────────────────────────────────────────────────────────────────
-function Av({ name, role, size=40 }) {
+function Av({ name, role, size=40, photo=null }) {
   const c = ROLE_META[role]?.color || G.green;
+  if (photo) return (
+    <div style={{width:size,height:size,borderRadius:size*.28,flexShrink:0,overflow:"hidden",border:`1.5px solid ${c}44`,flexShrink:0}}>
+      <img src={photo} alt={name} style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}} />
+    </div>
+  );
   return (
     <div style={{width:size,height:size,borderRadius:size*.28,flexShrink:0,background:`${c}18`,color:c,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"monospace",fontWeight:700,fontSize:size*.3,border:`1.5px solid ${c}44`}}>
       {ini(name)}
@@ -263,52 +270,126 @@ function QRCode({ value, size=180 }) {
 }
 
 // ─── PAY DUES MODAL ───────────────────────────────────────────────────────────
-function PayDuesModal({ user, settings, selMonth, onSubmit, onClose, existingPayment }) {
-  const [method, setMethod]   = useState("GPay");
-  const [note, setNote]       = useState("");
-  const [step, setStep]       = useState("choose"); // choose | qr | confirm
+function PayDuesModal({ user, settings, selMonth, fees, payments, activeMonths, onSubmit, onClose }) {
+  const due = settings.monthlyDue;
+  // payMode: "single" (selected month) | "multi-select" (pick months) | "forward" (N months ahead)
+  const [payMode, setPayMode]     = useState("single");
+  const [selectedMonths, setSel]  = useState([selMonth]);
+  const [forwardCount, setFwd]    = useState(1);
+  const [method, setMethod]       = useState("GPay");
+  const [note, setNote]           = useState("");
+  const [step, setStep]           = useState("months"); // months | method | qr | confirm
   const [screenshot, setScr]      = useState(null);
   const [screenshotData, setScrData] = useState(null);
   const fileRef = useRef();
 
-  const monthName = MONTHS[selMonth];
-  const gpayUPI   = settings.upiId || `${settings.gpayNumber}@okaxis`;
+  const gpayUPI = settings.upiId || `${settings.gpayNumber}@okaxis`;
 
-  if (existingPayment) return (
-    <Modal title="Payment Status" onClose={onClose}>
-      <div style={{textAlign:"center",padding:"16px 0"}}>
-        <div style={{fontSize:40,marginBottom:12}}>
-          {existingPayment.status==="approved"?"✅":existingPayment.status==="rejected"?"❌":"⏳"}
+  // Months to pay based on mode
+  const monthsToPay = payMode === "forward"
+    ? activeMonths.filter(({i}) => i >= selMonth).slice(0, forwardCount).map(({i})=>i)
+    : payMode === "multi-select" ? selectedMonths
+    : [selMonth];
+
+  const totalAmount = monthsToPay.length * due;
+  const alreadyPaid = monthsToPay.filter(i => fees[user.id]?.[`${YEAR}-${i}`]);
+  const pendingForMonth = monthsToPay.some(i =>
+    payments.find(p=>p.memberId===user.id&&p.month===i&&p.status==="pending")
+  );
+
+  // Check if there's already a pending/approved payment for selected month
+  const existingPayment = payments.find(p=>p.memberId===user.id&&p.month===selMonth&&p.year===YEAR&&p.status!=="rejected");
+
+  function toggleMonth(idx) {
+    setSel(prev => prev.includes(idx) ? prev.filter(i=>i!==idx) : [...prev, idx].sort((a,b)=>a-b));
+  }
+
+  const monthName = MONTHS[selMonth];
+
+  // Step: month selection
+  if (step==="months") return (
+    <Modal title="Pay Dues" onClose={onClose}>
+      {existingPayment && existingPayment.status==="pending" && (
+        <div style={{background:`${G.gold}12`,border:`1px solid ${G.gold}33`,borderRadius:11,padding:12,marginBottom:14,fontSize:12,color:G.gold}}>
+          ⏳ You already have a pending payment for {MONTHS[selMonth]}. You can still pay other months.
         </div>
-        <div style={{fontWeight:700,fontSize:16,color:G.text,marginBottom:8}}>
-          {existingPayment.status==="approved"?"Payment Approved!":existingPayment.status==="rejected"?"Payment Rejected":"Pending Verification"}
-        </div>
-        <div style={{fontSize:13,color:G.text2}}>
-          {existingPayment.status==="pending"?"Your payment is being reviewed by the Treasurer.":""}
-        </div>
-        <div style={{background:G.bg3,borderRadius:12,padding:14,marginTop:16,textAlign:"left"}}>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
-            <span style={{color:G.text2,fontSize:12}}>Month</span>
-            <span style={{color:G.text,fontSize:12,fontWeight:600}}>{MONTHS[existingPayment.month]} {existingPayment.year}</span>
+      )}
+
+      {/* Pay mode selector */}
+      <Label>HOW DO YOU WANT TO PAY?</Label>
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
+        {[
+          {id:"single",      icon:"1️⃣", label:"This month only",         sub:`Pay ${MONTHS[selMonth]} ${YEAR} — ₹${due}`},
+          {id:"multi-select",icon:"✅", label:"Select specific months",   sub:"Choose which months to pay"},
+          {id:"forward",     icon:"⏩", label:"Pay X months in advance",  sub:"Pay multiple upcoming months at once"},
+        ].map(opt=>(
+          <div key={opt.id} onClick={()=>{setPayMode(opt.id); if(opt.id==="single")setSel([selMonth]);}} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",borderRadius:11,border:`2px solid ${payMode===opt.id?G.green:G.border2}`,background:payMode===opt.id?`${G.green}12`:G.bg3,cursor:"pointer",transition:"all .2s"}}>
+            <div style={{fontSize:20}}>{opt.icon}</div>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:600,fontSize:13,color:G.text}}>{opt.label}</div>
+              <div style={{fontSize:11,color:G.text2,marginTop:1}}>{opt.sub}</div>
+            </div>
+            <div style={{width:16,height:16,borderRadius:"50%",border:`2px solid ${payMode===opt.id?G.green:G.border2}`,background:payMode===opt.id?G.green:"transparent"}} />
           </div>
-          <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
-            <span style={{color:G.text2,fontSize:12}}>Amount</span>
-            <span style={{color:G.green2,fontSize:12,fontWeight:700}}>₹{existingPayment.amount}</span>
+        ))}
+      </div>
+
+      {/* Multi-select: pick months */}
+      {payMode==="multi-select" && (
+        <div style={{marginBottom:14}}>
+          <Label>SELECT MONTHS TO PAY</Label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {activeMonths.map(({m:mn,i})=>{
+              const isPaid = fees[user.id]?.[`${YEAR}-${i}`];
+              const isSel  = selectedMonths.includes(i);
+              return (
+                <button key={i} onClick={()=>!isPaid&&toggleMonth(i)} style={{padding:"6px 12px",borderRadius:8,border:`1.5px solid ${isPaid?G.green+"44":isSel?G.green:G.border2}`,background:isPaid?`${G.green}18`:isSel?G.green:G.bg3,color:isPaid?"#555":isSel?"#fff":G.text2,fontSize:12,fontWeight:700,cursor:isPaid?"default":"pointer",fontFamily:"monospace",position:"relative"}}>
+                  {mn}{isPaid&&<span style={{fontSize:9,marginLeft:3}}>✓</span>}
+                </button>
+              );
+            })}
           </div>
-          <div style={{display:"flex",justifyContent:"space-between"}}>
-            <span style={{color:G.text2,fontSize:12}}>Method</span>
-            <span style={{color:G.text,fontSize:12,fontWeight:600}}>{existingPayment.method}</span>
+          <div style={{fontSize:11,color:G.text3,marginTop:6}}>Green with ✓ = already paid</div>
+        </div>
+      )}
+
+      {/* Forward: how many months */}
+      {payMode==="forward" && (
+        <div style={{marginBottom:14}}>
+          <Label>HOW MANY MONTHS AHEAD?</Label>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={()=>setFwd(f=>Math.max(1,f-1))} style={{width:36,height:36,borderRadius:9,border:`1px solid ${G.border2}`,background:G.bg3,color:G.text,fontSize:18,cursor:"pointer"}}>−</button>
+            <div style={{flex:1,textAlign:"center",fontSize:22,fontWeight:800,color:G.green2,fontFamily:"monospace"}}>{forwardCount}</div>
+            <button onClick={()=>setFwd(f=>Math.min(activeMonths.filter(({i})=>i>=selMonth).length,f+1))} style={{width:36,height:36,borderRadius:9,border:`1px solid ${G.border2}`,background:G.bg3,color:G.text,fontSize:18,cursor:"pointer"}}>+</button>
+          </div>
+          <div style={{fontSize:12,color:G.text2,marginTop:8,textAlign:"center"}}>
+            Paying: {activeMonths.filter(({i})=>i>=selMonth).slice(0,forwardCount).map(({m:mn})=>mn).join(", ")}
           </div>
         </div>
+      )}
+
+      {/* Total */}
+      <div style={{background:G.bg3,border:`1px solid ${G.border2}`,borderRadius:11,padding:14,marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <div style={{fontSize:12,color:G.text2}}>Total to pay</div>
+          <div style={{fontSize:11,color:G.text3,marginTop:2}}>{monthsToPay.length} month{monthsToPay.length>1?"s":""} × ₹{due}</div>
+        </div>
+        <div style={{fontSize:28,fontWeight:800,color:G.green2,fontFamily:"monospace"}}>₹{totalAmount}</div>
+      </div>
+
+      <div style={{display:"flex",gap:8}}>
+        <Btn variant="ghost" style={{flex:1}} onClick={onClose}>Cancel</Btn>
+        <Btn variant="green" style={{flex:2}} onClick={()=>setStep("method")} disabled={monthsToPay.length===0}>
+          Next: Choose Payment →
+        </Btn>
       </div>
     </Modal>
   );
 
-  if (step==="choose") return (
-    <Modal title={`Pay Dues — ${monthName} ${YEAR}`} onClose={onClose}>
-      <div style={{background:G.bg3,borderRadius:12,padding:14,marginBottom:20,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{fontSize:13,color:G.text2}}>Amount Due</div>
-        <div style={{fontSize:24,fontWeight:800,color:G.green2,fontFamily:"monospace"}}>₹{settings.monthlyDue}</div>
+  if (step==="method") return (
+    <Modal title={`Pay ₹${totalAmount} — ${monthsToPay.length} month${monthsToPay.length>1?"s":""}`} onClose={onClose}>
+      <div style={{background:`${G.green}12`,border:`1px solid ${G.green}33`,borderRadius:11,padding:12,marginBottom:16,fontSize:12,color:G.text2}}>
+        Months: <strong style={{color:G.green2}}>{monthsToPay.map(i=>MONTHS[i]).join(", ")}</strong> · Total: <strong style={{color:G.green2}}>₹{totalAmount}</strong>
       </div>
       <Label>SELECT PAYMENT METHOD</Label>
       <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
@@ -328,9 +409,9 @@ function PayDuesModal({ user, settings, selMonth, onSubmit, onClose, existingPay
         ))}
       </div>
       <div style={{display:"flex",gap:8}}>
-        <Btn variant="ghost" style={{flex:1}} onClick={onClose}>Cancel</Btn>
+        <Btn variant="ghost" style={{flex:1}} onClick={()=>setStep("months")}>← Back</Btn>
         <Btn variant="green" style={{flex:2}} onClick={()=>setStep(method==="Cash"?"confirm":"qr")}>
-          {method==="Cash"?"Confirm Cash Payment →":"Next: View QR →"}
+          {method==="Cash"?"Confirm Cash →":"Next: View QR →"}
         </Btn>
       </div>
     </Modal>
@@ -397,10 +478,10 @@ function PayDuesModal({ user, settings, selMonth, onSubmit, onClose, existingPay
     <Modal title="Confirm Payment" onClose={onClose}>
       <div style={{background:G.bg3,borderRadius:14,padding:16,marginBottom:16}}>
         {[
-          {l:"Member",  v:user.name},
-          {l:"Month",   v:`${monthName} ${YEAR}`},
-          {l:"Amount",  v:`₹${settings.monthlyDue}`, color:G.green2},
-          {l:"Method",  v:method},
+          {l:"Member",     v:user.name},
+          {l:"Months",     v:monthsToPay.map(i=>MONTHS[i]).join(", "), color:G.green2},
+          {l:"Total Amount",v:`₹${totalAmount}`, color:G.green2},
+          {l:"Method",     v:method},
           {l:"Screenshot", v:screenshot?screenshot.name:"Not uploaded"},
         ].map(r=>(
           <div key={r.l} style={{display:"flex",justifyContent:"space-between",padding:"7px 0",borderBottom:`1px solid ${G.border}`}}>
@@ -411,14 +492,14 @@ function PayDuesModal({ user, settings, selMonth, onSubmit, onClose, existingPay
       </div>
       <div style={{marginBottom:16}}>
         <Label>ADD A NOTE (OPTIONAL)</Label>
-        <Inp placeholder="e.g. Paid at meeting, transaction ID..." value={note} onChange={e=>setNote(e.target.value)} />
+        <Inp placeholder="e.g. Transaction ID, paid at meeting..." value={note} onChange={e=>setNote(e.target.value)} />
       </div>
       <div style={{background:`${G.gold}12`,border:`1px solid ${G.gold}33`,borderRadius:10,padding:12,fontSize:12,color:G.text2,marginBottom:16}}>
-        ⏳ Your payment will be reviewed and approved by the Treasurer or President.
+        ⏳ Payment will be reviewed by Treasurer or President.
       </div>
       <div style={{display:"flex",gap:8}}>
-        <Btn variant="ghost" style={{flex:1}} onClick={()=>setStep(method==="Cash"?"choose":"qr")}>← Back</Btn>
-        <Btn variant="green" style={{flex:2}} onClick={()=>onSubmit({method,note,screenshot:screenshot?.name||null,screenshotData})}>Submit Payment ✓</Btn>
+        <Btn variant="ghost" style={{flex:1}} onClick={()=>setStep(method==="Cash"?"method":"qr")}>← Back</Btn>
+        <Btn variant="green" style={{flex:2}} onClick={()=>onSubmit({method, note, monthsToPay, totalAmount, screenshot:screenshot?.name||null, screenshotData})}>Submit Payment ✓</Btn>
       </div>
     </Modal>
   );
@@ -596,7 +677,7 @@ function LoginScreen({ members, settings, onLogin }) {
           {/* Member preview */}
           {found ? (
             <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20,background:`${rc}12`,border:`1px solid ${rc}30`,borderRadius:12,padding:"11px 14px",animation:"slideDown .3s ease"}}>
-              <Av name={found.name} role={found.role} size={42} />
+              <Av name={found.name} role={found.role} size={42} photo={found.photo||null} />
               <div>
                 <div style={{fontWeight:700,fontSize:14,color:G.text}}>{found.name}</div>
                 <div style={{marginTop:4}}><Chip label={found.role} color={rc} /></div>
@@ -644,6 +725,183 @@ function LoginScreen({ members, settings, onLogin }) {
 }
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
+
+// ─── WHATSAPP REMINDER MODAL ──────────────────────────────────────────────────
+function WhatsAppModal({ allDefaulters, settings, due, onClose }) {
+  const [mode, setMode] = useState("group"); // group | individual
+  const [lang, setLang] = useState("english");
+  const [copied, setCopied] = useState(null);
+  const clubName = settings.clubName;
+
+  const MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  function groupMessage() {
+    if (lang === "malayalam") return (
+`🏠 *${clubName}*
+
+പ്രിയ അംഗങ്ങളേ,
+
+താഴെ പറയുന്ന അംഗങ്ങൾ ₹${due}/മാസം നിരക്കിൽ കുടിശ്ശിക ഉള്ളവരാണ്:
+
+${allDefaulters.map((d,i)=>`${i+1}. ${d.name} — ${d.unpaidMonths.join(", ")} (₹${d.totalOwed})`).join("
+")}
+
+ദയവായി app വഴി അടക്കുക അല്ലെങ്കിൽ Treasurer-നെ ബന്ധപ്പെടുക.
+
+നന്ദി 🙏`
+    );
+    return (
+`🏠 *${clubName}*
+
+Dear Members,
+
+The following members have pending dues (₹${due}/month):
+
+${allDefaulters.map((d,i)=>`${i+1}. ${d.name} — ${d.unpaidMonths.join(", ")} — ₹${d.totalOwed} pending`).join("
+")}
+
+Please pay via the app or contact our Treasurer.
+
+Thank you 🙏`
+    );
+  }
+
+  function individualMessage(member) {
+    if (lang === "malayalam") return (
+`🏠 *${clubName}*
+
+പ്രിയ ${member.name},
+
+നിങ്ങളുടെ കുടിശ്ശിക:
+${member.unpaidMonths.map(m=>`• ${m} — ₹${due}`).join("
+")}
+
+ആകെ: *₹${member.totalOwed}*
+
+ദയവായി app വഴി അടക്കുക. 🙏
+*${clubName}*`
+    );
+    return (
+`🏠 *${clubName}*
+
+Hi ${member.name},
+
+This is a friendly reminder about your pending dues:
+${member.unpaidMonths.map(m=>`• ${m} — ₹${due}`).join("
+")}
+
+Total pending: *₹${member.totalOwed}*
+
+Please pay via the app at your earliest convenience. 🙏
+*${clubName}*`
+    );
+  }
+
+  function copyText(text, key) {
+    navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 2000);
+  }
+
+  function openWhatsApp(phone, text) {
+    const cleaned = phone.replace(/\D/g,"");
+    const num = cleaned.startsWith("91") ? cleaned : `91${cleaned}`;
+    window.open(`https://wa.me/${num}?text=${encodeURIComponent(text)}`, "_blank");
+  }
+
+  if (allDefaulters.length === 0) return (
+    <Modal title="WhatsApp Reminders" onClose={onClose}>
+      <div style={{textAlign:"center",padding:"24px 0"}}>
+        <div style={{fontSize:40,marginBottom:12}}>🎉</div>
+        <div style={{fontWeight:700,color:G.green2,fontSize:16}}>No defaulters!</div>
+        <div style={{fontSize:13,color:G.text3,marginTop:6}}>All members are up to date.</div>
+      </div>
+    </Modal>
+  );
+
+  return (
+    <Modal title={`WhatsApp Reminders (${allDefaulters.length} defaulters)`} onClose={onClose} wide>
+      {/* Mode toggle */}
+      <div style={{display:"flex",gap:8,marginBottom:16}}>
+        {[
+          {id:"group",   label:"📢 Group Message", sub:"One message listing all defaulters"},
+          {id:"individual", label:"👤 Individual", sub:"Personal message per member"},
+        ].map(m=>(
+          <div key={m.id} onClick={()=>setMode(m.id)} style={{flex:1,padding:"10px 12px",borderRadius:11,border:`2px solid ${mode===m.id?G.green:G.border2}`,background:mode===m.id?`${G.green}12`:G.bg3,cursor:"pointer",transition:"all .2s"}}>
+            <div style={{fontSize:12,fontWeight:700,color:mode===m.id?G.green2:G.text}}>{m.label}</div>
+            <div style={{fontSize:10,color:G.text3,marginTop:2}}>{m.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Language toggle */}
+      <div style={{display:"flex",gap:6,marginBottom:16}}>
+        {["english","malayalam"].map(l=>(
+          <button key={l} onClick={()=>setLang(l)} style={{padding:"6px 14px",borderRadius:8,border:`1px solid ${lang===l?"#25d366":G.border2}`,background:lang===l?"#25d366":G.bg3,color:lang===l?"#000":G.text3,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"Sora,sans-serif",textTransform:"capitalize"}}>
+            {l==="english"?"🇬🇧 English":"🇮🇳 Malayalam"}
+          </button>
+        ))}
+      </div>
+
+      {mode === "group" && (
+        <div>
+          {/* Message preview */}
+          <div style={{background:"#075e5411",border:"1px solid #25d36633",borderRadius:12,padding:14,marginBottom:14,fontSize:12,color:G.text2,whiteSpace:"pre-wrap",lineHeight:1.7,fontFamily:"monospace",maxHeight:200,overflowY:"auto"}}>
+            {groupMessage()}
+          </div>
+          {/* Defaulters summary */}
+          <div style={{marginBottom:14}}>
+            {allDefaulters.map(d=>(
+              <div key={d.id} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid ${G.border}`,fontSize:12}}>
+                <span style={{color:G.text,fontWeight:600}}>{d.name}</span>
+                <span style={{color:G.red,fontFamily:"monospace"}}>{d.unpaidMonths.length} months · ₹{d.totalOwed}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>copyText(groupMessage(),"group")} style={{flex:1,padding:"11px",borderRadius:10,border:"none",background:copied==="group"?"#34d399":"#25d366",color:"#000",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"Sora,sans-serif"}}>
+              {copied==="group"?"✓ Copied!":"📋 Copy Message"}
+            </button>
+            <button onClick={()=>window.open(`https://wa.me/?text=${encodeURIComponent(groupMessage())}`,"_blank")} style={{flex:1,padding:"11px",borderRadius:10,border:"none",background:"#128c7e",color:"#fff",fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"Sora,sans-serif"}}>
+              Open WhatsApp 📱
+            </button>
+          </div>
+        </div>
+      )}
+
+      {mode === "individual" && (
+        <div style={{maxHeight:420,overflowY:"auto"}}>
+          {allDefaulters.map(d=>{
+            const msg = individualMessage(d);
+            return (
+              <div key={d.id} style={{background:G.bg3,border:`1px solid ${G.border2}`,borderRadius:14,padding:14,marginBottom:10}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:14,color:G.text}}>{d.name}</div>
+                    <div style={{fontSize:11,color:G.red,marginTop:2}}>{d.unpaidMonths.join(", ")} · ₹{d.totalOwed} pending</div>
+                  </div>
+                  <div style={{fontFamily:"monospace",fontSize:11,color:G.text3}}>{d.phone}</div>
+                </div>
+                <div style={{background:"#075e5408",border:"1px solid #25d36622",borderRadius:9,padding:10,fontSize:11,color:G.text2,whiteSpace:"pre-wrap",lineHeight:1.6,marginBottom:10,fontFamily:"monospace",maxHeight:100,overflowY:"auto"}}>
+                  {msg}
+                </div>
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={()=>copyText(msg,d.id)} style={{flex:1,padding:"8px",borderRadius:8,border:"none",background:copied===d.id?"#34d399":"#1e2e1e",color:copied===d.id?"#000":G.text2,fontWeight:600,fontSize:11,cursor:"pointer",fontFamily:"Sora,sans-serif",border:`1px solid ${G.border2}`}}>
+                    {copied===d.id?"✓ Copied":"📋 Copy"}
+                  </button>
+                  <button onClick={()=>openWhatsApp(d.phone,msg)} style={{flex:2,padding:"8px",borderRadius:8,border:"none",background:"#25d366",color:"#000",fontWeight:700,fontSize:11,cursor:"pointer",fontFamily:"Sora,sans-serif"}}>
+                    💬 Open WhatsApp for {d.name.split(" ")[0]}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 export default function App() {
   const [user, setUser]         = useState(null);
   const [members, setMembers]   = useState(INIT_MEMBERS);
@@ -657,12 +915,14 @@ export default function App() {
   const [tab, setTab]           = useState("home");
   const [toast, setToast]       = useState(null);
   const [toastType, setToastType] = useState("success");
-  const [selMonth, setSelMonth] = useState(2);
+  const [selMonth, setSelMonth] = useState(settings.startMonth ?? 3);
+  const [memberPhotos, setMemberPhotos] = useState({}); // { memberId: base64 }
+  const [showWAModal, setShowWAModal] = useState(false);
   const [modal, setModal]       = useState(null);
   const [editTarget, setEditTarget] = useState(null);
 
   // forms
-  const [mForm,   setMForm]   = useState({name:"",phone:"",role:"Member",pin:""});
+  const [mForm,   setMForm]   = useState({name:"",phone:"",role:"Member",pin:"",photo:null});
   const [expForm, setExpForm] = useState({desc:"",amount:"",date:"",cat:"Rent"});
   const [incForm, setIncForm] = useState({desc:"",amount:"",date:"",cat:"Donation",fromName:"",notes:""});
   const [evForm,  setEvForm]  = useState({title:"",date:"",time:"",location:"",desc:""});
@@ -680,7 +940,13 @@ export default function App() {
           getMembers(), getFees(YEAR), getExpenses(), getIncome(),
           getPayments(), getEvents(), getAnnouncements(), getSettings()
         ]);
-        if (m && m.length)   setMembers(m);
+        if (m && m.length) {
+          setMembers(m);
+          // Extract photos into memberPhotos map
+          const photos = {};
+          m.forEach(mem => { if(mem.photo) photos[mem.id] = mem.photo; });
+          setMemberPhotos(photos);
+        }
         if (f)               setFees(f);
         if (ex && ex.length) setExpenses(ex);
         if (inc && inc.length) setIncome(inc);
@@ -698,6 +964,8 @@ export default function App() {
           regNo:      sett.reg_no       || s.regNo,
           founded:    sett.founded      || s.founded,
           location:   sett.location     || s.location,
+          startMonth: sett.start_month  !== undefined ? sett.start_month : s.startMonth,
+          startYear:  sett.start_year   || s.startYear,
         }));
       } catch(e) { console.error("Supabase load error:", e); }
       setLoading(false);
@@ -708,7 +976,18 @@ export default function App() {
   const role          = user?.role;
   const activeMembers = members.filter(m=>m.active);
   const due           = settings.monthlyDue;
-  const totalCollected= activeMembers.reduce((s,m)=>s+paidCount(fees,m.id)*due,0);
+
+  // Only show months from the club's start month onwards
+  const startIdx      = settings.startMonth ?? 0;
+  const activeMonths  = MONTHS.map((m,i) => ({m, i})).filter(({i}) => i >= startIdx);
+  const activeMonthCount = activeMonths.length;
+
+  // paidCount only counts active months
+  function activePaidCount(memberId) {
+    return activeMonths.filter(({i}) => fees[memberId]?.[`${YEAR}-${i}`]).length;
+  }
+
+  const totalCollected= activeMembers.reduce((s,m)=>s+activePaidCount(m.id)*due,0);
   const totalExp      = expenses.reduce((s,e)=>s+e.amount,0);
   const totalIncome   = income.reduce((s,i)=>s+i.amount,0);
   const balance       = totalCollected + totalIncome - totalExp;
@@ -721,29 +1000,35 @@ export default function App() {
   function closeModal() { setModal(null); setEditTarget(null); setPinErr(""); }
 
   // payment actions
-  async function submitPayment({method,note,screenshotData}) {
+  async function submitPayment({method, note, monthsToPay, totalAmount, screenshotData}) {
     try {
-      // Convert base64 to File for upload if screenshot exists
       let screenshotFile = null;
       if (screenshotData) {
         const res = await fetch(screenshotData);
         const blob = await res.blob();
         screenshotFile = new File([blob], `payment_${Date.now()}.jpg`, {type:"image/jpeg"});
       }
+      const months = monthsToPay || [selMonth];
+      const amt    = totalAmount  || due;
+      // Submit one payment record covering all months
       await dbSubmitPayment({
-        member_id: user.id, member_name: user.name,
-        month: selMonth, year: YEAR, amount: due,
-        method, note: note||"", status:"pending",
-        // store base64 directly as fallback if storage bucket not set up
+        member_id:   user.id,
+        member_name: user.name,
+        month:       months[0],   // primary month
+        months_paid: JSON.stringify(months), // all months as JSON
+        year:        YEAR,
+        amount:      amt,
+        method,
+        note: note || "",
+        status: "pending",
         screenshot_url: screenshotFile ? null : (screenshotData || null),
       }, screenshotFile);
-      // Reload payments so admin sees it immediately
       getPayments().then(setPayments);
       closeModal();
-      notify("Payment submitted! Awaiting approval.");
+      notify(`Payment of ₹${amt} submitted for ${months.length} month${months.length>1?"s":""}!`);
     } catch(e) {
       console.error("Payment submit error:", e);
-      notify("Error submitting payment. Try again.","error");
+      notify("Error submitting payment. Try again.", "error");
     }
   }
 
@@ -751,10 +1036,15 @@ export default function App() {
     const p = payments.find(x=>x.id===id);
     if (!p) return;
     try {
-      await dbApprovePayment(id, user.name, p.member_id||p.memberId, p.year, p.month);
+      // Parse all months from months_paid field or fall back to single month
+      const months = p.months_paid ? JSON.parse(p.months_paid) : [p.month];
+      // Approve and mark all months as paid
+      for (const m of months) {
+        await dbApprovePayment(id, user.name, p.member_id||p.memberId, p.year, m);
+      }
       getPayments().then(setPayments);
       getFees(YEAR).then(setFees);
-      notify("Payment approved!");
+      notify(`Approved! ${months.length} month${months.length>1?"s":""} marked paid.`);
     } catch(e) { notify("Error approving. Try again.","error"); }
   }
 
@@ -775,13 +1065,13 @@ export default function App() {
         notify("Member updated!");
       } else {
         if (members.find(m=>m.phone===mForm.phone)) { notify("Phone number already exists!","error"); return; }
-        await dbAddMember({...mForm, joined:`${YEAR}-03`, active:true});
+        await dbAddMember({...mForm, joined:`${YEAR}-03`, active:true, photo:mForm.photo||null});
         notify(`${mForm.name} added!`);
       }
       getMembers().then(setMembers);
       getFees(YEAR).then(setFees);
     } catch(e) { notify("Error saving member. Try again.","error"); return; }
-    setMForm({name:"",phone:"",role:"Member",pin:""}); closeModal();
+    setMForm({name:"",phone:"",role:"Member",pin:"",photo:null}); closeModal();
   }
 
   async function bulkImport(rows) {
@@ -873,10 +1163,14 @@ export default function App() {
   }
 
   function generateWhatsApp() {
-    if (!monthDefaulters.length) { notify("No defaulters this month!"); return; }
-    const msg=`🏠 *${settings.clubName}*\n\nPending dues for *${MONTHS[selMonth]} ${YEAR}*:\n\n${monthDefaulters.map((d,i)=>`${i+1}. ${d.name}`).join("\n")}\n\nMonthly due: ₹${due}\nPay via app or contact Treasurer.\n\nThank you 🙏`;
-    navigator.clipboard.writeText(msg); notify("WhatsApp message copied!");
+    setShowWAModal(true);
   }
+
+  // Compute all defaulters across all months (for combined view)
+  const allDefaulters = activeMembers.map(m => {
+    const unpaidMonths = activeMonths.filter(({i}) => !fees[m.id]?.[`${YEAR}-${i}`]).map(({m:mn})=>mn);
+    return { ...m, unpaidMonths, totalOwed: unpaidMonths.length * due };
+  }).filter(m => m.unpaidMonths.length > 0);
 
   const NAV = [
     {id:"home",   icon:"⌂",  label:"Home"},
@@ -912,6 +1206,7 @@ export default function App() {
       `}</style>
 
       <Toast msg={toast} type={toastType} />
+      {showWAModal && <WhatsAppModal allDefaulters={allDefaulters} settings={settings} due={due} onClose={()=>setShowWAModal(false)} />}
 
       {/* ── MODALS ── */}
       {(modal==="addMember"||modal==="editMember")&&(
@@ -926,6 +1221,21 @@ export default function App() {
               </Sel>
             </div>
             <div><Label>4-DIGIT PIN</Label><Inp placeholder="e.g. 1234" maxLength={4} value={mForm.pin} onChange={e=>setMForm(p=>({...p,pin:e.target.value.replace(/\D/g,"")}))} /></div>
+            <div>
+              <Label>PROFILE PHOTO (OPTIONAL)</Label>
+              <div onClick={()=>document.getElementById("mform-photo").click()} style={{border:`2px dashed ${mForm.photo?G.green:G.border2}`,borderRadius:11,padding:"12px",textAlign:"center",cursor:"pointer",background:mForm.photo?`${G.green}08`:G.bg3,transition:"all .2s",display:"flex",alignItems:"center",gap:12}}>
+                {mForm.photo ? (
+                  <><img src={mForm.photo} alt="preview" style={{width:44,height:44,borderRadius:10,objectFit:"cover",border:`1px solid ${G.green}44`}} />
+                  <div style={{textAlign:"left"}}><div style={{fontSize:12,color:G.green2,fontWeight:600}}>Photo uploaded</div><div style={{fontSize:11,color:G.text3,marginTop:2}}>Tap to change</div></div></>
+                ) : (
+                  <><div style={{fontSize:28}}>📷</div><div style={{textAlign:"left"}}><div style={{fontSize:12,color:G.text2,fontWeight:600}}>Upload photo</div><div style={{fontSize:11,color:G.text3,marginTop:2}}>JPG, PNG — shows on profile & ID card</div></div></>
+                )}
+                <input id="mform-photo" type="file" accept="image/*" style={{display:"none"}} onChange={e=>{
+                  const f=e.target.files[0]; if(!f) return;
+                  const r=new FileReader(); r.onload=ev=>setMForm(p=>({...p,photo:ev.target.result})); r.readAsDataURL(f);
+                }} />
+              </div>
+            </div>
             <div style={{display:"flex",gap:8,marginTop:4}}>
               <Btn variant="ghost" style={{flex:1}} onClick={closeModal}>Cancel</Btn>
               <Btn variant="green" style={{flex:2}} onClick={saveMember}>{modal==="editMember"?"Save":"Add Member"}</Btn>
@@ -937,7 +1247,7 @@ export default function App() {
       {modal==="bulkImport"&&<BulkImportModal onImport={bulkImport} onClose={closeModal} />}
 
       {modal==="payDues"&&(
-        <PayDuesModal user={user} settings={settings} selMonth={selMonth} onSubmit={submitPayment} onClose={closeModal} existingPayment={myPendingPay} />
+        <PayDuesModal user={user} settings={settings} selMonth={selMonth} fees={fees} payments={payments} activeMonths={activeMonths} onSubmit={submitPayment} onClose={closeModal} />
       )}
 
       {(modal==="addExpense"||modal==="editExpense")&&(
@@ -1046,6 +1356,17 @@ export default function App() {
                 <Inp type={f.t} value={settForm[f.k]||""} onChange={e=>setSettForm(p=>({...p,[f.k]:f.t==="number"?Number(e.target.value):e.target.value}))} />
               </div>
             ))}
+            <div>
+              <Label>FEE TRACKING STARTS FROM</Label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {MONTHS.map((m,i)=>(
+                  <button key={i} onClick={()=>setSettForm(p=>({...p,startMonth:i}))} style={{padding:"6px 12px",borderRadius:8,border:`1.5px solid ${settForm.startMonth===i?G.green:G.border2}`,background:settForm.startMonth===i?G.green:G.bg3,color:settForm.startMonth===i?"#fff":G.text3,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace"}}>
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <div style={{fontSize:11,color:G.text3,marginTop:6}}>Months before this are hidden from fee tracker</div>
+            </div>
             {/* QR image uploads */}
             {[
               {l:"GPAY QR CODE IMAGE", k:"gpayQR"},
@@ -1079,6 +1400,8 @@ export default function App() {
                     gpay_name:settForm.gpayName, upi_id:settForm.upiId,
                     gpay_qr_url:settForm.gpayQR||null,
                     upi_qr_url:settForm.upiQR||null,
+                    start_month:settForm.startMonth ?? 0,
+                    start_year: settForm.startYear || YEAR,
                   };
                   await dbSaveSettings(updates);
                   setSettings(settForm);
@@ -1159,9 +1482,9 @@ export default function App() {
                 )}
               </div>
               <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                {MONTHS.map((_,i)=>{
+                {activeMonths.map(({m,i})=>{
                   const paid=fees[user.id]?.[`${YEAR}-${i}`];
-                  return <div key={i} style={{flex:"1 0 auto",minWidth:24,height:24,borderRadius:6,background:paid?`${G.green}22`:G.redDim,border:`1px solid ${paid?G.green+"44":G.red+"33"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:700,fontFamily:"monospace",color:paid?G.green2:G.red}} title={MONTHS[i]}>{MONTHS[i][0]}</div>
+                  return <div key={i} style={{flex:"1 0 auto",minWidth:24,height:24,borderRadius:6,background:paid?`${G.green}22`:G.redDim,border:`1px solid ${paid?G.green+"44":G.red+"33"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:700,fontFamily:"monospace",color:paid?G.green2:G.red}} title={m}>{m[0]}</div>
                 })}
               </div>
               <div style={{fontSize:12,color:G.text3,marginTop:8}}>
@@ -1225,7 +1548,7 @@ export default function App() {
 
             {/* Month chips */}
             <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:16}}>
-              {MONTHS.map((m,i)=>(
+              {activeMonths.map(({m,i})=>(
                 <button key={i} onClick={()=>setSelMonth(i)} style={{padding:"6px 11px",borderRadius:8,border:`1px solid ${i===selMonth?G.green:G.border2}`,background:i===selMonth?G.green:G.bg3,color:i===selMonth?"#fff":G.text3,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"monospace",transition:"all .15s"}}>{m}</button>
               ))}
             </div>
@@ -1253,7 +1576,7 @@ export default function App() {
               return (
                 <Card key={m.id} style={{marginBottom:8,borderColor:isMe?`${rc}44`:G.border}}>
                   <div style={{display:"flex",alignItems:"center",gap:12}}>
-                    <Av name={m.name} role={m.role} size={42} />
+                    <Av name={m.name} role={m.role} size={42} photo={memberPhotos[m.id]||m.photo||null} />
                     <div style={{flex:1}}>
                       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
                         <span style={{fontWeight:700,fontSize:14}}>{m.name}</span>
@@ -1285,14 +1608,14 @@ export default function App() {
                 <thead>
                   <tr>
                     <td style={{fontSize:11,color:G.text3,paddingBottom:8,minWidth:80}}>Member</td>
-                    {MONTHS.map((m,i)=><td key={i} style={{textAlign:"center",fontSize:9,color:i===selMonth?G.green2:G.text3,fontFamily:"monospace",paddingBottom:8,paddingInline:3}}>{m}</td>)}
+                    {activeMonths.map(({m,i})=><td key={i} style={{textAlign:"center",fontSize:9,color:i===selMonth?G.green2:G.text3,fontFamily:"monospace",paddingBottom:8,paddingInline:3}}>{m}</td>)}
                   </tr>
                 </thead>
                 <tbody>
                   {activeMembers.map(m=>(
                     <tr key={m.id}>
                       <td style={{fontSize:11,paddingBottom:6,fontWeight:600,paddingRight:8,color:m.id===user.id?rc:G.text}}>{m.name.split(" ")[0]}</td>
-                      {MONTHS.map((_,i)=>{
+                      {activeMonths.map(({i})=>{
                         const k=`${YEAR}-${i}`, p=fees[m.id]?.[k];
                         return <td key={i} style={{textAlign:"center",paddingBottom:6}}>
                           <button onClick={async()=>{if(!CAN.markFees(role))return;const newVal=!fees[m.id]?.[k];setFees(f=>({...f,[m.id]:{...f[m.id],[k]:newVal}}));notify("Updated!");try{await dbToggleFee(m.id,YEAR,i,newVal);}catch(e){notify("Sync error","error");}}} style={{width:20,height:20,borderRadius:5,border:"none",cursor:CAN.markFees(role)?"pointer":"default",background:p?`${G.green}20`:G.redDim,color:p?G.green2:G.red,fontSize:9,fontWeight:700,transition:"all .15s"}}>{p?"✓":"✗"}</button>
@@ -1539,7 +1862,7 @@ export default function App() {
                 </div>
                 {members.map(m=>(
                   <div key={m.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:`1px solid ${G.border}`,opacity:m.active?1:.45}}>
-                    <Av name={m.name} role={m.role} size={36} />
+                    <Av name={m.name} role={m.role} size={36} photo={memberPhotos[m.id]||m.photo||null} />
                     <div style={{flex:1}}>
                       <div style={{fontWeight:600,fontSize:13}}>{m.name}</div>
                       <div style={{display:"flex",gap:5,marginTop:3,flexWrap:"wrap"}}>
@@ -1618,7 +1941,7 @@ export default function App() {
             <div style={{fontSize:22,fontWeight:800,letterSpacing:"-0.6px",marginBottom:18}}>My Profile</div>
             <Card style={{marginBottom:14,borderColor:`${rc}33`}}>
               <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:18}}>
-                <Av name={user.name} role={role} size={60} />
+                <Av name={user.name} role={role} size={60} photo={memberPhotos[user.id]||user.photo||null} />
                 <div>
                   <div style={{fontSize:20,fontWeight:800}}>{user.name}</div>
                   <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
@@ -1626,6 +1949,27 @@ export default function App() {
                     <Chip label={`#${String(user.id).padStart(3,"0")}`} color={G.text3} />
                   </div>
                   <div style={{fontSize:12,color:G.text3,marginTop:6,fontFamily:"monospace"}}>{user.phone}</div>
+                </div>
+              </div>
+              <div style={{marginBottom:12}}>
+                <div onClick={()=>document.getElementById("profile-photo-upload").click()} style={{border:`2px dashed ${memberPhotos[user.id]||user.photo?G.green:G.border2}`,borderRadius:12,padding:"10px 14px",cursor:"pointer",background:memberPhotos[user.id]||user.photo?`${G.green}08`:G.bg3,display:"flex",alignItems:"center",gap:12,transition:"all .2s"}}>
+                  {memberPhotos[user.id]||user.photo ? (
+                    <><img src={memberPhotos[user.id]||user.photo} alt="profile" style={{width:36,height:36,borderRadius:9,objectFit:"cover"}} />
+                    <div><div style={{fontSize:12,color:G.green2,fontWeight:600}}>Photo uploaded ✓</div><div style={{fontSize:11,color:G.text3,marginTop:1}}>Tap to change</div></div></>
+                  ) : (
+                    <><div style={{fontSize:22}}>📷</div><div><div style={{fontSize:12,color:G.text2,fontWeight:600}}>Add profile photo</div><div style={{fontSize:11,color:G.text3,marginTop:1}}>Shown on ID card and member list</div></div></>
+                  )}
+                  <input id="profile-photo-upload" type="file" accept="image/*" style={{display:"none"}} onChange={async e=>{
+                    const f=e.target.files[0]; if(!f) return;
+                    const r=new FileReader();
+                    r.onload=async ev=>{
+                      const base64=ev.target.result;
+                      setMemberPhotos(p=>({...p,[user.id]:base64}));
+                      try{ await dbUpdateMember(user.id,{photo:base64}); notify("Photo saved!"); }
+                      catch(err){ notify("Photo saved locally — sync later.","error"); }
+                    };
+                    r.readAsDataURL(f);
+                  }} />
                 </div>
               </div>
               <div style={{display:"flex",gap:8}}>
@@ -1637,7 +1981,7 @@ export default function App() {
             <Card style={{marginBottom:14}}>
               <div style={{fontWeight:700,fontSize:14,marginBottom:14}}>My Fee History — {YEAR}</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                {MONTHS.map((m,i)=>{
+                {activeMonths.map(({m,i})=>{
                   const paid=fees[user.id]?.[`${YEAR}-${i}`];
                   return (
                     <div key={i} style={{flex:"1 0 58px",background:paid?`${G.green}12`:G.redDim,border:`1px solid ${paid?G.green+"33":G.red+"30"}`,borderRadius:10,padding:"8px 4px",textAlign:"center"}}>
@@ -1650,12 +1994,12 @@ export default function App() {
               <Divider />
               <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0"}}>
                 <div style={{fontSize:13,color:G.text2}}>Total Paid</div>
-                <div style={{fontFamily:"monospace",fontWeight:700,color:G.green2}}>₹{paidCount(fees,user.id)*due}</div>
+                <div style={{fontFamily:"monospace",fontWeight:700,color:G.green2}}>₹{activePaidCount(user.id)*due}</div>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0"}}>
                 <div style={{fontSize:13,color:G.text2}}>Outstanding</div>
-                <div style={{fontFamily:"monospace",fontWeight:700,color:(12-paidCount(fees,user.id))*due>0?G.red:G.green2}}>
-                  {(12-paidCount(fees,user.id))*due>0?`₹${(12-paidCount(fees,user.id))*due}`:"All paid ✓"}
+                <div style={{fontFamily:"monospace",fontWeight:700,color:(activeMonthCount-activePaidCount(user.id))*due>0?G.red:G.green2}}>
+                  {(activeMonthCount-activePaidCount(user.id))*due>0?`₹${(activeMonthCount-activePaidCount(user.id))*due}`:"All paid ✓"}
                 </div>
               </div>
             </Card>
