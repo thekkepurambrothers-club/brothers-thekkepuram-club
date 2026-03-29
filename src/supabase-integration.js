@@ -11,8 +11,8 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL  = 'https://jtnhkxzkdeawpqolozsa.supabase.co';   // ← paste here
-const SUPABASE_KEY  = 'sb_publishable_oY1XIF00vdlUz0GOLVcTuA_nuNm4l3T';                   // ← paste here
+const SUPABASE_URL  = 'https://YOUR_PROJECT_ID.supabase.co';   // ← paste here
+const SUPABASE_KEY  = 'YOUR_ANON_PUBLIC_KEY';                   // ← paste here
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -92,24 +92,42 @@ export async function getPayments() {
 }
 
 export async function submitPayment(payment, screenshotFile) {
-  let screenshot_url = null;
+  let screenshot_url = payment.screenshot_url || null;
 
-  // Upload screenshot to Supabase Storage if provided
   if (screenshotFile) {
-    const filename = `${Date.now()}_${screenshotFile.name}`;
-    const { data: _, error: uploadError } = await supabase.storage
-      .from('screenshots')
-      .upload(filename, screenshotFile);
-    if (!uploadError) {
-      const { data: urlData } = supabase.storage.from('screenshots').getPublicUrl(filename);
-      screenshot_url = urlData.publicUrl;
+    try {
+      // Try storage bucket first
+      const filename = `${Date.now()}_${screenshotFile.name}`;
+      const { error: uploadError } = await supabase.storage
+        .from('screenshots').upload(filename, screenshotFile);
+      if (!uploadError) {
+        const { data: urlData } = supabase.storage.from('screenshots').getPublicUrl(filename);
+        screenshot_url = urlData.publicUrl;
+      } else {
+        // Fallback: store as base64 directly in DB
+        screenshot_url = await fileToBase64(screenshotFile);
+      }
+    } catch(e) {
+      try { screenshot_url = await fileToBase64(screenshotFile); } catch(e2) {}
     }
   }
 
-  const { data, error } = await supabase.from('payments').insert([{ ...payment, screenshot_url }]).select().single();
+  const { screenshot_url: _ignore, ...paymentData } = payment;
+  const { data, error } = await supabase.from('payments')
+    .insert([{ ...paymentData, screenshot_url }]).select().single();
   if (error) throw error;
   return data;
 }
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 
 export async function approvePayment(paymentId, reviewerName, memberId, year, month) {
   // Mark payment approved
@@ -238,21 +256,9 @@ export async function getSettings() {
   return data;
 }
 
-export async function saveSettings(updates, gpayQRFile, upiQRFile) {
-  // Upload QR images if provided
-  if (gpayQRFile) {
-    const fn = `gpay_qr_${Date.now()}`;
-    await supabase.storage.from('qrcodes').upload(fn, gpayQRFile, { upsert: true });
-    const { data } = supabase.storage.from('qrcodes').getPublicUrl(fn);
-    updates.gpay_qr_url = data.publicUrl;
-  }
-  if (upiQRFile) {
-    const fn = `upi_qr_${Date.now()}`;
-    await supabase.storage.from('qrcodes').upload(fn, upiQRFile, { upsert: true });
-    const { data } = supabase.storage.from('qrcodes').getPublicUrl(fn);
-    updates.upi_qr_url = data.publicUrl;
-  }
-
+export async function saveSettings(updates) {
+  // QR images are already base64 strings in updates.gpay_qr_url / upi_qr_url
+  // They get stored directly in the DB text column — no storage bucket needed
   const { data, error } = await supabase.from('settings')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', 1).select().single();

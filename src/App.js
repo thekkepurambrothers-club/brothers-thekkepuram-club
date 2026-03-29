@@ -345,9 +345,9 @@ function PayDuesModal({ user, settings, selMonth, onSubmit, onClose, existingPay
       </div>
       {/* QR — show admin-uploaded image or fallback UPI ID */}
       <div style={{display:"flex",justifyContent:"center",marginBottom:16}}>
-        {(method==="GPay"&&settings.gpayQR)||(method==="UPI"&&settings.upiQR)||settings.gpayQR ? (
+        {(method==="GPay"&&(settings.gpayQR||settings.gpay_qr_url))||(method==="UPI"&&(settings.upiQR||settings.upi_qr_url))||(settings.gpayQR||settings.gpay_qr_url) ? (
           <div style={{background:"white",padding:10,borderRadius:16,boxShadow:`0 0 40px ${G.green}33`}}>
-            <img src={method==="GPay"?(settings.gpayQR||settings.upiQR):(settings.upiQR||settings.gpayQR)} alt="QR Code" style={{width:180,height:180,borderRadius:10,objectFit:"contain",display:"block"}} />
+            <img src={method==="GPay"?(settings.gpayQR||settings.gpay_qr_url||settings.upiQR||settings.upi_qr_url):(settings.upiQR||settings.upi_qr_url||settings.gpayQR||settings.gpay_qr_url)} alt="QR Code" style={{width:180,height:180,borderRadius:10,objectFit:"contain",display:"block"}} />
           </div>
         ) : (
           <div style={{background:G.bg3,border:`2px dashed ${G.border2}`,borderRadius:16,padding:28,textAlign:"center"}}>
@@ -511,10 +511,10 @@ function PaymentApprovalCard({ p, onApprove, onReject }) {
   return (
     <div style={{background:G.bg3,border:`1px solid ${p.status==="pending"?`${G.gold}44`:G.border}`,borderRadius:14,padding:14,marginBottom:10}}>
       {/* Screenshot fullscreen viewer */}
-      {showScr && p.screenshotData && (
+      {showScr && (p.screenshotData || p.screenshot_url) && (
         <div style={{position:"fixed",inset:0,background:"#000e",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}} onClick={()=>setShowScr(false)}>
           <div style={{position:"relative",maxWidth:480,width:"100%"}}>
-            <img src={p.screenshotData} alt="Payment screenshot" style={{width:"100%",borderRadius:16,boxShadow:"0 20px 60px #000a"}} />
+            <img src={p.screenshot_url || p.screenshotData} alt="Payment screenshot" style={{width:"100%",borderRadius:16,boxShadow:"0 20px 60px #000a"}} />
             <button onClick={()=>setShowScr(false)} style={{position:"absolute",top:-12,right:-12,background:G.red,border:"none",color:"#fff",width:32,height:32,borderRadius:"50%",fontSize:16,cursor:"pointer",fontWeight:700}}>✕</button>
           </div>
         </div>
@@ -529,9 +529,9 @@ function PaymentApprovalCard({ p, onApprove, onReject }) {
         <Chip label={p.status.toUpperCase()} color={statusColor} />
       </div>
       {/* Screenshot preview */}
-      {p.screenshotData ? (
+      {(p.screenshotData || p.screenshot_url) ? (
         <div style={{marginBottom:10,cursor:"pointer"}} onClick={()=>setShowScr(true)}>
-          <img src={p.screenshotData} alt="Payment proof" style={{width:"100%",maxHeight:160,objectFit:"cover",borderRadius:10,border:`1px solid ${G.border2}`}} />
+          <img src={p.screenshot_url || p.screenshotData} alt="Payment proof" style={{width:"100%",maxHeight:160,objectFit:"cover",borderRadius:10,border:`1px solid ${G.border2}`}} />
           <div style={{fontSize:11,color:G.blue,marginTop:4,textAlign:"center"}}>👆 Tap to view full screenshot</div>
         </div>
       ) : (
@@ -733,12 +733,18 @@ export default function App() {
       await dbSubmitPayment({
         member_id: user.id, member_name: user.name,
         month: selMonth, year: YEAR, amount: due,
-        method, note: note||"", status:"pending"
+        method, note: note||"", status:"pending",
+        // store base64 directly as fallback if storage bucket not set up
+        screenshot_url: screenshotFile ? null : (screenshotData || null),
       }, screenshotFile);
+      // Reload payments so admin sees it immediately
       getPayments().then(setPayments);
       closeModal();
       notify("Payment submitted! Awaiting approval.");
-    } catch(e) { notify("Error submitting payment. Try again.","error"); }
+    } catch(e) {
+      console.error("Payment submit error:", e);
+      notify("Error submitting payment. Try again.","error");
+    }
   }
 
   async function approvePayment(id) {
@@ -1071,9 +1077,11 @@ export default function App() {
                     founded:settForm.founded, reg_no:settForm.regNo,
                     monthly_due:settForm.monthlyDue, gpay_number:settForm.gpayNumber,
                     gpay_name:settForm.gpayName, upi_id:settForm.upiId,
-                    gpay_qr_url:settForm.gpayQR, upi_qr_url:settForm.upiQR,
+                    gpay_qr_url:settForm.gpayQR||null,
+                    upi_qr_url:settForm.upiQR||null,
                   };
                   await dbSaveSettings(updates);
+                  setSettings(settForm);
                   setSettings(settForm); closeModal(); notify("Settings saved!");
                 } catch(e) { notify("Error saving settings.","error"); }
               }}>Save</Btn>
